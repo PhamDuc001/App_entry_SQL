@@ -428,17 +428,8 @@ class DevicePerformanceAnalyzer:
         self.config = config or Config()
     
     def extract_largest_file_from_zip(self, zip_path: Path, extract_dir: Path) -> Optional[Path]:
-        """Extract largest file from zip with intelligent caching"""
+        """Extract largest file from zip with intelligent caching and reuse of existing _tmp files"""
         extract_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate cache filename
-        zip_mtime = zip_path.stat().st_mtime
-        cache_filename = f"{zip_path.stem}_{int(zip_mtime)}.txt"
-        cache_path = extract_dir / cache_filename
-        
-        # Return cached file if exists
-        if cache_path.exists():
-            return cache_path
         
         try:
             with zipfile.ZipFile(zip_path, 'r') as z:
@@ -447,6 +438,13 @@ class DevicePerformanceAnalyzer:
                     return None
                 
                 largest = max(infos, key=lambda x: x.file_size)
+                # Use original filename from zip (align with pageboost_main)
+                original_filename = largest.filename.replace("/", "_")
+                cache_path = extract_dir / original_filename
+                
+                # Return cached file if exists (reuse from previous extraction)
+                if cache_path.exists():
+                    return cache_path
                 
                 # Extract to cache location
                 with open(cache_path, "wb") as f:
@@ -601,14 +599,20 @@ class DevicePerformanceAnalyzer:
         return total_minutes
     
     def extract_all_zips(self, folder: Path) -> Dict[Path, Path]:
-        """Extract all zip files first and return mapping of zip files to extracted file paths"""
+        """Extract all zip files first and return mapping of zip files to extracted file paths.
+        Reuses existing _tmp folder if present, otherwise creates new one.
+        """
         cache_dir = folder / "_tmp"
         cache_dir.mkdir(parents=True, exist_ok=True)
         
         zip_files = [f for f in folder.glob("*.zip") if f.is_file()]
         zip_to_extracted = {}
         
-        # Use threading to extract files in parallel
+        if not zip_files:
+            return zip_to_extracted
+        
+        # Extract files using threading (intelligently handles existing _tmp files)
+        print(f"Processing {len(zip_files)} zip files...")
         with ThreadPoolExecutor(max_workers=8) as executor:
             # Submit all extraction tasks
             future_to_zip = {
@@ -629,11 +633,14 @@ class DevicePerformanceAnalyzer:
         return zip_to_extracted
     
     def collect_all_data_from_zips(self, folder: Path) -> Tuple[List[UptimeData], List[CrashData]]:
-        """Collect all data (uptime and crashes) from zip files in a single pass per file"""
+        """Collect all data (uptime and crashes) from zip files in a single pass per file.
+        Extracts part names from zip file names (using regex).
+        Uses extracted .txt files from _tmp folder.
+        """
         uptime_data = []
         crash_data = []
         
-        # Extract all zip files first
+        # Extract all zip files first (intelligently reuses existing _tmp if available)
         zip_to_extracted = self.extract_all_zips(folder)
         
         # Then process all extracted files
@@ -642,7 +649,9 @@ class DevicePerformanceAnalyzer:
             uptime_result, io_read_data, io_write_data, file_crash_data = self.parse_file_content(dump_path)
             uptime_minutes, status, raw_line = uptime_result
             
-            # Extract part name from zip file name
+            # Extract part name from ZIP FILE NAME (not from folder name)
+            # This ensures we always get the correct part name even when reusing _tmp
+            # Example: A576BYK7_BOS_251128_251128_120843_6part_Bugreport.zip -> 6part
             part_name = self._extract_part_name(zip_file.name)
             
             uptime_data.append(UptimeData(
@@ -861,13 +870,27 @@ class DevicePerformanceAnalyzer:
         return "UNKNOWN"
     
     def analyze_folder(self, folder: Path, extracted: bool = False) -> AnalysisResult:
-        """Analyze a single folder and return structured results"""
+        """Analyze a single folder and return structured results.
+        
+        Prioritizes zip files for extraction and part naming.
+        If zip files exist, extracts part names from zip file names (using regex).
+        Always uses extracted .txt files from _tmp folder (reuses if already extracted).
+        Falls back to extracted folders only if no zip files found.
+        
+        For app start/kill analysis, always looks for extracted folders if they exist.
+        """
         prefix = self.get_prefix(folder)
         
-        if extracted:
-            uptime_data, crash_data = self.collect_all_data_from_extracted(folder)
-        else:
+        # Check if zip files exist - if yes, use zip mode for uptime/crash data
+        # This ensures part names are extracted from zip files, not folder names
+        zip_files = list(folder.glob("*.zip"))
+        
+        if zip_files or not extracted:
+            # Use zip mode (extracts part names from zip files, uses _tmp for content)
             uptime_data, crash_data = self.collect_all_data_from_zips(folder)
+        else:
+            # Fall back to extracted folder mode only if no zip files found
+            uptime_data, crash_data = self.collect_all_data_from_extracted(folder)
         
         # Keep original uptime data for uptime sheets (individual files)
         original_uptime_data = uptime_data[:]
@@ -879,12 +902,16 @@ class DevicePerformanceAnalyzer:
         updated_uptime_data = self._update_uptime_data_with_averages(uptime_data, part_io_data)
         
         # Analyze app start/kill events
+        # IMPORTANT: Always check for extracted folders, even if we used zip mode above
+        # because app analysis requires actual folder structure
         app_start_kill_data = []
-        if extracted:
+        extracted_folders = [d for d in folder.iterdir() if d.is_dir() and self._extract_part_name(d.name)]
+        
+        if extracted_folders:
             app_analyzer = AppStartKillAnalyzer()
             # Group subdirectories by part name for app analysis
             part_groups = defaultdict(list)
-            for sub_dir in sorted([d for d in folder.iterdir() if d.is_dir()]):
+            for sub_dir in sorted(extracted_folders):
                 part_name = self._extract_part_name(sub_dir.name)
                 if part_name:
                     part_groups[part_name].append(sub_dir)
@@ -2300,7 +2327,11 @@ if __name__ == "__main__":
     if len(sys.argv) == 3:
         folder1 = sys.argv[1]
         folder2 = sys.argv[2]
-        analyze_device_performance(folder1, folder2)
+        # Create Device objects from folder paths
+        config = Config()
+        dut_device = DUT(Path(folder1), config)
+        ref_device = REF(Path(folder2), config)
+        analyze_device_performance(dut_device, ref_device)
     else:
         print("Usage: python device_performance_analyzer.py <folder1> <folder2>")
         print("Example: python device_performance_analyzer.py dut_logs ref_logs")

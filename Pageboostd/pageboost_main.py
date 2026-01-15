@@ -29,13 +29,18 @@ APP_MAPPING = {
 
 
 def extract_largest_file_from_zip(zip_path, extract_dir):
-    """Decompress and return biggest file .txt"""
+    """Decompress and return biggest file .txt, reuse existing if available"""
     with zipfile.ZipFile(zip_path, 'r') as z:
         infos = z.infolist()
         if not infos:
             return None
         largest = max(infos, key=lambda x: x.file_size)
         out_path = os.path.join(extract_dir, largest.filename.replace("/", "_"))
+        
+        # Reuse existing file if it already exists
+        if os.path.exists(out_path):
+            return out_path
+        
         with open(out_path, "wb") as f:
             f.write(z.read(largest))
         return out_path
