@@ -1,0 +1,140 @@
+/* ui/styles.qss */
+
+/* Cài đặt chung */
+QWidget {
+    background-color: #2b2b2b;
+    color: #ffffff;
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 14px;
+}
+
+/* Group Box (Khung DUT/REF) */
+QGroupBox {
+    border: 2px solid #555;
+    border-radius: 8px;
+    margin-top: 20px;
+    font-weight: bold;
+    color: #4CAF50; /* Màu xanh lá cho text tiêu đề */
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 5px;
+}
+
+/* Input text */
+QLineEdit {
+    background-color: #3c3c3c;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 8px;
+    color: #fff;
+    selection-background-color: #4CAF50;
+}
+QLineEdit:focus {
+    border: 1px solid #4CAF50;
+}
+
+/* Nút bấm (Button) */
+QPushButton {
+    background-color: #0d6efd;
+    color: white;
+    border-radius: 5px;
+    padding: 8px 15px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #0b5ed7;
+}
+QPushButton:pressed {
+    background-color: #0a58ca;
+}
+
+/* Nút Start đặc biệt */
+QPushButton#btnStart {
+    background-color: #198754; /* Màu xanh lá */
+    font-size: 16px;
+    padding: 12px;
+}
+QPushButton#btnStart:hover {
+    background-color: #157347;
+}
+QPushButton#btnStart:disabled {
+    background-color: #555;
+    color: #aaa;
+}
+
+/* Radio Button */
+QRadioButton {
+    spacing: 10px;
+}
+QRadioButton::indicator {
+    width: 18px;
+    height: 18px;
+}
+
+/* Vùng Log Console */
+QTextEdit {
+    background-color: #1e1e1e;
+    color: #00ff00;
+    border: 1px solid #444;
+    border-radius: 5px;
+    font-family: "Consolas", monospace;
+    font-size: 13px;
+}
+
+
+/* --- STYLE CHO NÚT CHỌN CHẾ ĐỘ (MODE BUTTONS) --- */
+QPushButton.mode-btn {
+    background-color: #3c3c3c;
+    color: #aaaaaa;
+    border: 2px solid #555;
+    border-radius: 8px;
+    padding: 15px;
+    font-size: 15px;
+    font-weight: bold;
+    text-align: center;
+}
+
+QPushButton.mode-btn:hover {
+    background-color: #444;
+    border-color: #777;
+}
+
+/* Trạng thái được chọn (Checked) của Execution */
+QPushButton#btnModeExec:checked {
+    background-color: #0d6efd; /* Màu xanh dương đậm */
+    color: white;
+    border: 2px solid #5c9eff;
+}
+
+/* Trạng thái được chọn (Checked) của Reaction */
+QPushButton#btnModeReac:checked {
+    background-color: #d35400; /* Màu cam đậm */
+    color: white;
+    border: 2px solid #ff8c42;
+}
+
+/* Trạng thái được chọn (Checked) của Memory */
+QPushButton#btnModeMem:checked {
+    background-color: #198754; /* Màu xanh lá cây đậm */
+    color: white;
+    border: 2px solid #28a745;
+}
+
+/* Trạng thái được chọn (Checked) của Pageboost */
+QPushButton#btnModePb:checked {
+    background-color: #6f42c1; /* Màu tím đậm */
+    color: white;
+    border: 2px solid #8a63d2;
+}
+
+/* Label mô tả mode đang chọn */
+QLabel#lblModeDesc {
+    color: #cccccc;
+    font-style: italic;
+    font-size: 13px;
+    margin-bottom: 10px;
+}
+
+/* ... (Giữ nguyên phần còn lại như QLineEdit, QPushButton#btnStart...) ... */

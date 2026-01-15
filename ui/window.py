@@ -1,0 +1,325 @@
+# ui/window.py
+import sys
+import os
+import io
+import importlib.util
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
+                             QLineEdit, QPushButton, QGroupBox, QTextEdit, 
+                             QFileDialog, QMessageBox, QApplication, 
+                             QButtonGroup, QScrollArea)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+# Danh sách App mặc định
+DEFAULT_TARGET_APPS = [
+    "camera", "helloworld", "calllog", "clock", "contact", 
+    "calendar", "calculator", "gallery", "message", "menu", 
+    "myfile", "sip", "internet", "note", "setting", 
+    "voice", "recent"
+]
+
+# --- CLASS BẮT LOG ---
+class PrintRedirector(io.StringIO):
+    def __init__(self, signal):
+        super().__init__()
+        self.signal = signal
+
+    def write(self, text):
+        if text.strip():
+            self.signal.emit(text.strip())
+
+# --- WORKER THREAD ---
+class WorkerThread(QThread):
+    log_signal = pyqtSignal(str) 
+    finished_signal = pyqtSignal()
+
+    def __init__(self, mode, dut_path, ref_path, root_dir, target_apps):
+        super().__init__()
+        self.mode = mode
+        self.dut = dut_path
+        self.ref = ref_path
+        self.root_dir = root_dir
+        self.target_apps = target_apps # List app user chọn
+
+    def run(self):
+        original_stdout = sys.stdout
+        sys.stdout = PrintRedirector(self.log_signal)
+
+        try:
+            self.log_signal.emit(f"=== STARTED {self.mode.upper()} MODE ===")
+            
+            if self.root_dir not in sys.path:
+                sys.path.insert(0, self.root_dir)
+
+            if self.mode == "execution":
+                import execution_sql
+                importlib.reload(execution_sql) # Reload để reset state nếu cần
+                # FIX: Truyền target_apps vào hàm run_analysis
+                execution_sql.run_analysis(self.dut, self.ref, self.target_apps)
+
+            elif self.mode == "reaction":
+                import reaction_sql
+                importlib.reload(reaction_sql)
+                # FIX: Truyền target_apps vào hàm run_analysis
+                reaction_sql.run_analysis(self.dut, self.ref, self.target_apps)
+
+            elif self.mode == "memory":
+                # Run both abnormal_memory and memory_main analyses
+                from MemoryStatus import memory_main, abnormal_memory
+                
+                # Run memory_main analysis
+                self.log_signal.emit("Running memory main analysis...")
+                memory_main.diff_memory(self.dut, self.ref)
+
+            elif self.mode == "pageboost":
+                from Pageboostd import pageboost_main
+                pageboost_main.diff_pageboostd(self.dut, self.ref, extracted=False)
+
+                # Run abnormal_memory analysis
+                from MemoryStatus import abnormal_memory
+                self.log_signal.emit("Running abnormal memory analysis...")
+                config = abnormal_memory.Config()
+                dut_device = abnormal_memory.DUT(self.dut, config)
+                ref_device = abnormal_memory.REF(self.ref, config)
+                abnormal_memory.analyze_device_performance(dut_device, ref_device)
+
+            self.log_signal.emit("\n>>> COMPLETED SUCCESSFULLY! <<<")
+            
+        except Exception as e:
+            self.log_signal.emit(f"\n[ERROR] {e}")
+            import traceback
+            self.log_signal.emit(traceback.format_exc())
+            
+        finally:
+            sys.stdout = original_stdout
+            self.finished_signal.emit()
+
+# --- CUSTOM WIDGET KÉO THẢ ---
+class DragDropLineEdit(QLineEdit):
+    def __init__(self, placeholder=""):
+        super().__init__()
+        self.setPlaceholderText(placeholder)
+        self.setAcceptDrops(True) 
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls:
+            path = urls[0].toLocalFile()
+            self.setText(path)
+
+# --- MAIN WINDOW ---
+class MainWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Trace Analysis Tool (Multi-Mode)")
+        self.resize(1000, 850)
+        self.setAcceptDrops(True)
+        self.root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.app_buttons = [] # Lưu danh sách các nút app để check state
+        
+        self.setup_ui()
+        self.load_stylesheet()
+
+    def load_stylesheet(self):
+        qss_path = os.path.join(os.path.dirname(__file__), "styles.qss")
+        if os.path.exists(qss_path):
+            with open(qss_path, "r", encoding="utf-8") as f:
+                self.setStyleSheet(f.read())
+        # Thêm style riêng cho App Toggle Button nếu chưa có trong file QSS
+        self.setStyleSheet(self.styleSheet() + """
+            QPushButton.app-btn {
+                background-color: #555;
+                color: #aaa;
+                border: 1px solid #666;
+                border-radius: 4px;
+                padding: 5px;
+                font-size: 11px;
+            }
+            QPushButton.app-btn:checked {
+                background-color: #28a745; /* Green */
+                color: white;
+                border: 1px solid #1e7e34;
+            }
+        """)
+
+    def setup_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+
+        # 1. HEADER
+        header_layout = QHBoxLayout()
+        title = QLabel("PERFORMANCE ANALYSIS TOOL")
+        title.setStyleSheet("font-size: 22px; font-weight: 900; color: #ffffff;")
+        header_layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
+        main_layout.addLayout(header_layout)
+
+        # 2. MODE SELECTION
+        self.mode_group = QButtonGroup(self)
+        mode_grid = QGridLayout()
+        mode_grid.setSpacing(15)
+
+        self.btn_exec = self.create_mode_btn("⚡ EXECUTION", "btnModeExec")
+        self.btn_reac = self.create_mode_btn("⏱ REACTION", "btnModeReac")
+        self.btn_mem = self.create_mode_btn("💾 MEMORY", "btnModeMem")
+        self.btn_pb = self.create_mode_btn("🚀 PAGEBOOST", "btnModePb")
+        
+        self.btn_exec.setChecked(True)
+
+        mode_grid.addWidget(self.btn_exec, 0, 0)
+        mode_grid.addWidget(self.btn_reac, 0, 1)
+        mode_grid.addWidget(self.btn_mem, 1, 0)
+        mode_grid.addWidget(self.btn_pb, 1, 1)
+        main_layout.addLayout(mode_grid)
+
+        # 3. INPUT AREA
+        input_layout = QHBoxLayout()
+        grp_dut = QGroupBox("Folder DUT")
+        dut_layout = QVBoxLayout()
+        self.txt_dut = DragDropLineEdit("Kéo thả folder DUT vào đây...")
+        btn_browse_dut = QPushButton("📂 Browse DUT")
+        btn_browse_dut.clicked.connect(lambda: self.browse_folder(self.txt_dut))
+        dut_layout.addWidget(self.txt_dut)
+        dut_layout.addWidget(btn_browse_dut)
+        grp_dut.setLayout(dut_layout)
+
+        grp_ref = QGroupBox("Folder REF")
+        ref_layout = QVBoxLayout()
+        self.txt_ref = DragDropLineEdit("Kéo thả folder REF vào đây...")
+        btn_browse_ref = QPushButton("📂 Browse REF")
+        btn_browse_ref.clicked.connect(lambda: self.browse_folder(self.txt_ref))
+        ref_layout.addWidget(self.txt_ref)
+        ref_layout.addWidget(btn_browse_ref)
+        grp_ref.setLayout(ref_layout)
+
+        input_layout.addWidget(grp_dut)
+        input_layout.addWidget(grp_ref)
+        main_layout.addLayout(input_layout)
+
+        # 4. START BUTTON
+        self.btn_start = QPushButton("START ANALYSIS PROCESS")
+        self.btn_start.setObjectName("btnStart")
+        self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_start.setFixedHeight(45)
+        self.btn_start.clicked.connect(self.start_analysis)
+        main_layout.addWidget(self.btn_start)
+
+        # 5. APP SELECTION (GRID BUTTONS) - SỬA LẠI PHẦN NÀY
+        app_grp = QGroupBox("🎯 Target Apps (Execution & Reaction Only)")
+        app_layout = QVBoxLayout()
+        
+        # Grid chứa các nút
+        self.app_grid = QGridLayout()
+        self.app_grid.setSpacing(10)
+        
+        # Tạo nút Select All / Deselect All
+        ctrl_layout = QHBoxLayout()
+        btn_all = QPushButton("Select All")
+        btn_all.clicked.connect(lambda: self.toggle_all_apps(True))
+        
+        btn_none = QPushButton("Uncheck All")
+        btn_none.clicked.connect(lambda: self.toggle_all_apps(False))
+        
+        ctrl_layout.addWidget(btn_all)
+        ctrl_layout.addWidget(btn_none)
+        ctrl_layout.addStretch()
+        app_layout.addLayout(ctrl_layout)
+
+        # Render các nút App
+        cols = 6 # Số cột
+        for i, app_name in enumerate(DEFAULT_TARGET_APPS):
+            btn = QPushButton(app_name)
+            btn.setCheckable(True)
+            btn.setChecked(True) # Mặc định chọn
+            btn.setProperty("class", "app-btn") # Để CSS bắt
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            
+            row = i // cols
+            col = i % cols
+            self.app_grid.addWidget(btn, row, col)
+            self.app_buttons.append(btn)
+
+        app_layout.addLayout(self.app_grid)
+        app_grp.setLayout(app_layout)
+        main_layout.addWidget(app_grp)
+
+        # 6. LOG CONSOLE
+        self.txt_log = QTextEdit()
+        self.txt_log.setReadOnly(True)
+        self.txt_log.setStyleSheet("""
+            QTextEdit { background-color: #1e1e1e; color: #00ff00; font-family: Consolas; font-size: 12px; border: 1px solid #555; }
+        """)
+        main_layout.addWidget(self.txt_log)
+
+    def create_mode_btn(self, text, obj_name):
+        btn = QPushButton(text)
+        btn.setObjectName(obj_name)
+        btn.setProperty("class", "mode-btn") 
+        btn.setCheckable(True)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedHeight(50)
+        self.mode_group.addButton(btn)
+        return btn
+
+    def toggle_all_apps(self, checked):
+        for btn in self.app_buttons:
+            btn.setChecked(checked)
+
+    def browse_folder(self, line_edit):
+        folder = QFileDialog.getExistingDirectory(self, "Chọn Thư Mục")
+        if folder:
+            line_edit.setText(folder)
+
+    def log(self, message):
+        self.txt_log.append(message)
+        sb = self.txt_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def get_selected_apps(self):
+        selected = []
+        for btn in self.app_buttons:
+            if btn.isChecked():
+                selected.append(btn.text())
+        return selected
+
+    def start_analysis(self):
+        dut = self.txt_dut.text().strip()
+        ref = self.txt_ref.text().strip()
+        
+        if self.btn_exec.isChecked(): mode = "execution"
+        elif self.btn_reac.isChecked(): mode = "reaction"
+        elif self.btn_mem.isChecked(): mode = "memory"
+        elif self.btn_pb.isChecked(): mode = "pageboost"
+        else: mode = "execution"
+
+        if not os.path.isdir(dut):
+            QMessageBox.critical(self, "Lỗi", "Đường dẫn DUT không hợp lệ!")
+            return
+        if not os.path.isdir(ref):
+            QMessageBox.critical(self, "Lỗi", "Đường dẫn REF không hợp lệ!")
+            return
+
+        target_apps = self.get_selected_apps()
+        # Chỉ check list app nếu là mode Execution hoặc Reaction
+        if not target_apps and mode in ["execution", "reaction"]:
+             QMessageBox.warning(self, "Cảnh báo", "Bạn chưa chọn App nào để phân tích!")
+             return
+
+        self.btn_start.setEnabled(False)
+        self.btn_start.setText(f"Running {mode.upper()}...")
+        self.txt_log.clear()
+
+        self.worker = WorkerThread(mode, dut, ref, self.root_dir, target_apps)
+        self.worker.log_signal.connect(self.log)
+        self.worker.finished_signal.connect(self.on_finished)
+        self.worker.start()
+
+    def on_finished(self):
+        self.btn_start.setEnabled(True)
+        self.btn_start.setText("START ANALYSIS PROCESS")
+        QMessageBox.information(self, "Hoàn thành", "Quá trình phân tích đã kết thúc.")
