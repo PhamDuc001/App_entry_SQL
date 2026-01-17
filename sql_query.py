@@ -614,6 +614,7 @@ def process_loadapk_data(df) -> List[Dict[str, Any]]:
 # ==============================================================
 # --- 1. Query cho Process (Group by Process Name) ---
 def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int, cpu_cores: List[int]):
+    """Query top CPU usage by process. Returns raw PID for processes without name."""
     if not cpu_cores or dur_time <= 0: return None
     cpu_cores_str = ','.join(map(str, cpu_cores))
     
@@ -622,7 +623,8 @@ def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int
     CREATE VIEW cpu_view_proc AS
     SELECT 
         sched_slice.ts, sched_slice.dur, sched_slice.cpu,
-        COALESCE(process.name, main_thread.name, 'PID-' || process.pid) as proc_name
+        COALESCE(process.name, main_thread.name) as proc_name,
+        process.pid as raw_pid
     FROM sched_slice 
     JOIN thread USING (utid) JOIN process USING (upid)
     LEFT JOIN thread AS main_thread ON (process.pid = main_thread.tid)
@@ -636,26 +638,67 @@ def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int
     
     SELECT 
         proc_name,
+        raw_pid,
         SUM(dur)/1e6 AS dur_ms,
         COUNT(*) AS Occurences, 
         ROUND(SUM(dur) * 100.0 / {dur_time}*7, 2) AS dur_percent
     FROM target_proc
     WHERE cpu IN ({cpu_cores_str})
-    GROUP BY proc_name
+    GROUP BY COALESCE(proc_name, raw_pid)
+    --GROUP BY proc_name, raw_pid
     ORDER BY dur_ms DESC;
     """
     df = query_df(tp, sql)
     tp.query("DROP TABLE IF EXISTS target_proc; DROP VIEW IF EXISTS intervals_proc; DROP VIEW IF EXISTS cpu_view_proc;")
     return df
 
-def process_cpu_data_process(df) -> List[Dict[str, Any]]:
+def process_cpu_data_process(df, pid_mapping: Dict[int, str] = None) -> List[Dict[str, Any]]:
+    """
+    Process CPU data for processes, with optional PID to process name mapping.
+    
+    Args:
+        df: DataFrame from get_top_cpu_usage_process()
+        pid_mapping: Optional dict {PID: process_name} from dumpstate
+    
+    Returns:
+        List of dicts with proc_name, dur_ms, occurences, dur_percent
+    """
     if df is None or df.empty: return []
-    return [{
-        'dur_ms': float(row['dur_ms']),
-        'proc_name': str(row['proc_name']) if row['proc_name'] else 'Unknown',
-        'occurences': int(row['Occurences']),
-        'dur_percent': float(row['dur_percent'])
-    } for _, row in df.iterrows()]
+    
+    result = []
+    for _, row in df.iterrows():
+        proc_name = row.get('proc_name')
+        raw_pid = row.get('raw_pid')
+        
+        # Kiểm tra proc_name là None, NaN, hoặc empty string
+        is_proc_name_empty = (
+            proc_name is None or 
+            pd.isna(proc_name) or 
+            (isinstance(proc_name, str) and proc_name.strip() == '')
+        )
+        
+        if is_proc_name_empty:
+            if pid_mapping and raw_pid is not None and not pd.isna(raw_pid):
+                # Thử map PID -> process name từ dumpstate
+                pid_int = int(raw_pid) if raw_pid else 0
+                proc_name = pid_mapping.get(pid_int, f'PID-{pid_int}')
+            else:
+                # Fallback: sử dụng format PID-xxx
+                if raw_pid is not None and not pd.isna(raw_pid):
+                    proc_name = f'PID-{int(raw_pid)}'
+                else:
+                    proc_name = 'Unknown'
+        else:
+            proc_name = str(proc_name)
+        
+        result.append({
+            'dur_ms': float(row['dur_ms']),
+            'proc_name': proc_name,
+            'occurences': int(row['Occurences']),
+            'dur_percent': float(row['dur_percent'])
+        })
+    
+    return result
 
 # --- 2. Query cho Thread (Group by TID/Thread Name) ---
 def get_top_cpu_usage_thread(tp: TraceProcessor, start_time: int, dur_time: int, cpu_cores: List[int]):
@@ -971,7 +1014,18 @@ def get_background_process_states(tp: TraceProcessor, start_ts: int, end_ts: int
 
 # [File: sql_query.py]
 
-def analyze_trace(tp: TraceProcessor, trace_path: str) -> Dict[str, Any]:
+def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, str] = None) -> Dict[str, Any]:
+    """
+    Analyze a trace file and extract performance metrics.
+    
+    Args:
+        tp: TraceProcessor instance
+        trace_path: Path to the trace file
+        pid_mapping: Optional dict {PID: process_name} from dumpstate for CPU process mapping
+    
+    Returns:
+        Dict containing all extracted metrics
+    """
     metrics: Dict[str, Any] = {}
 
     ensure_slice_with_names_view(tp)
@@ -1272,9 +1326,9 @@ def analyze_trace(tp: TraceProcessor, trace_path: str) -> Dict[str, Any]:
     cpu_cores = [1,2,3,4,5,6,7]
     dur_time = (end_ts - touch_down_ts) if end_ts else 0
 
-    # 1. Get Top Process
+    # 1. Get Top Process (with PID mapping from dumpstate)
     cpu_proc_df = get_top_cpu_usage_process(tp, touch_down_ts, dur_time, cpu_cores)
-    metrics["CPU_Process_Data"] = process_cpu_data_process(cpu_proc_df)
+    metrics["CPU_Process_Data"] = process_cpu_data_process(cpu_proc_df, pid_mapping)
     
     # 2. Get Top Thread
     cpu_thread_df = get_top_cpu_usage_thread(tp, touch_down_ts, dur_time, cpu_cores)

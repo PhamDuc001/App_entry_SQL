@@ -43,6 +43,12 @@ from perfetto.trace_processor.api import TraceProcessor, TraceProcessorConfig
 from sql_query import *
 from atracetosystrace import convert_trace
 from multiprocessing import Pool, cpu_count
+from dumpstate_parser import (
+    collect_bugreport_mappings, 
+    get_bugreport_for_log, 
+    get_app_group,
+    get_bugreport_group_from_name
+)
 
 # ---------------------------------------------------------------------------
 # Configuration 
@@ -58,9 +64,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
 APP_MAPPING = {
@@ -185,12 +191,45 @@ def group_traces_by_app(trace_files: List[str], target_apps: List[str] = None) -
 # Batch Processing Logic với Multiprocessing
 # ---------------------------------------------------------------------------
 
-def process_single_trace(args: Tuple[str, int, str]) -> Tuple[str, int, str, Optional[Dict[str, Any]], str]:
+# Global variable để lưu bugreport mappings cho multiprocessing
+_BUGREPORT_MAPPINGS = {}
+_ALL_FILES_SORTED = []
+
+def _process_single_trace_worker(args):
     """
-    Xử lý một trace file duy nhất (để chạy trong multiprocessing pool).
+    Worker function cho multiprocessing.
+    Sử dụng global _BUGREPORT_MAPPINGS để lấy pid_mapping.
+    """
+    file_path, occurrence, app_name = args
+    filename = Path(file_path).stem
+    config = TraceProcessorConfig(bin_path=TRACE_PROCESSOR_BIN)
+    
+    # Tìm pid_mapping tương ứng cho file này
+    pid_mapping = None
+    if _BUGREPORT_MAPPINGS and _ALL_FILES_SORTED:
+        pid_mapping = get_bugreport_for_log(
+            file_path, 
+            _BUGREPORT_MAPPINGS, 
+            _ALL_FILES_SORTED
+        )
+    
+    try:
+        with TraceProcessor(trace=convert_trace(file_path), config=config) as tp:
+            metrics = analyze_trace(tp, file_path, pid_mapping)
+            category = 'entry' if occurrence % 2 == 1 else 'reentry'
+            return (app_name, occurrence, category, metrics, filename)
+    except Exception as e:
+        print(f"    [ERROR] {Path(file_path).name}: {e}")
+        return (app_name, occurrence, 'entry' if occurrence % 2 == 1 else 'reentry', None, filename)
+
+
+def process_single_trace(args: Tuple[str, int, str], pid_mapping: Dict[int, str] = None) -> Tuple[str, int, str, Optional[Dict[str, Any]], str]:
+    """
+    Xử lý một trace file duy nhất.
     
     Args:
         args: (file_path, occurrence, app_name)
+        pid_mapping: Optional dict {PID: process_name} from dumpstate
     
     Returns:
         (app_name, occurrence, category, metrics, filename) hoặc (app_name, occurrence, category, None, filename) nếu lỗi
@@ -201,7 +240,7 @@ def process_single_trace(args: Tuple[str, int, str]) -> Tuple[str, int, str, Opt
     
     try:
         with TraceProcessor(trace=convert_trace(file_path), config=config) as tp:
-            metrics = analyze_trace(tp, file_path)
+            metrics = analyze_trace(tp, file_path, pid_mapping)
             category = 'entry' if occurrence % 2 == 1 else 'reentry'
             return (app_name, occurrence, category, metrics, filename)
     except Exception as e:
@@ -209,21 +248,34 @@ def process_single_trace(args: Tuple[str, int, str]) -> Tuple[str, int, str, Opt
         return (app_name, occurrence, 'entry' if occurrence % 2 == 1 else 'reentry', None, filename)
 
 
-def process_all_traces(folder_path: str, label: str, num_workers: int = 8, target_apps: List[str] = None) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+def process_all_traces(folder_path: str, label: str, num_workers: int = 8, 
+                       target_apps: List[str] = None, extracted: bool = False) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
     """
     Xử lý tất cả traces trong folder với multiprocessing và phân loại theo app và entry/re-entry.
     
     Args:
         folder_path: Đường dẫn folder chứa traces
         label: "DUT" hoặc "REF"
-        num_workers: Số lượng processes chạy song song (default: 4)
+        num_workers: Số lượng processes chạy song song (default: 8)
+        target_apps: Danh sách apps cần xử lý (optional)
+        extracted: True nếu các Bugreport đã được giải nén thành folder
     
     Returns:
         Dict[app_name, Dict["entry"|"reentry", List[metrics_dict]]]
     """
+    global _BUGREPORT_MAPPINGS, _ALL_FILES_SORTED
+    
     trace_files = collect_trace_files(folder_path)
     app_groups = group_traces_by_app(trace_files, target_apps)
     
+    # Thu thập bugreport mappings cho folder này
+    print(f"\n[{label}] Collecting bugreport mappings (extracted={extracted})...")
+    _BUGREPORT_MAPPINGS = collect_bugreport_mappings(folder_path, extracted)
+    print(f"[{label}] Found {len(_BUGREPORT_MAPPINGS)} bugreport(s) with PID mappings")
+    
+    # Lưu danh sách tất cả files để xác định bugreport tương ứng
+    folder = Path(folder_path)
+    _ALL_FILES_SORTED = sorted([str(f) for f in folder.iterdir() if f.is_file() or f.is_dir()])
     
     # Chuẩn bị danh sách tasks cho multiprocessing
     tasks = []
@@ -231,14 +283,14 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8, targe
         for file_path, occurrence in file_list:
             tasks.append((file_path, occurrence, app_name))
     
-    print(f"\n[{label}] Processing {len(tasks)} trace files with {num_workers} workers...")
+    print(f"[{label}] Processing {len(tasks)} trace files with {num_workers} workers...")
     
     # Chạy song song với Pool
     results = defaultdict(lambda: {'entry': [None] * 100, 'reentry': [None] * 100})  # Pre-allocate
     
     pool = Pool(processes=num_workers)
     try:
-        for i, (app_name, occurrence, category, metrics, filename) in enumerate(pool.imap(process_single_trace, tasks)):
+        for i, (app_name, occurrence, category, metrics, filename) in enumerate(pool.imap(_process_single_trace_worker, tasks)):
             if metrics:
                 cycle_index = (occurrence - 1) // 2
                 while len(results[app_name][category]) <= cycle_index:
@@ -1245,13 +1297,15 @@ def extract_device_code(header_title):
 # Main
 # ---------------------------------------------------------------------------
 
-def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None) -> None:
+def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None, extracted: bool = False) -> None:
     """
     Phân tích hiệu năng từ các trace trong DUT và REF folders
     
     Args:
         dut_folder: Đường dẫn folder DUT
         ref_folder: Đường dẫn folder REF
+        target_apps: Danh sách apps cần xử lý (optional)
+        extracted: True nếu các Bugreport đã được giải nén thành folder
     """
     num_workers = min(cpu_count(), 8)
     
@@ -1263,17 +1317,18 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     print("=" * 70)
     print("BATCH EXECUTION TIME ANALYSIS")
     print(f"Workers: {num_workers} | Available CPUs: {cpu_count()}")
+    print(f"Extracted mode: {extracted}")
     print("=" * 70)
     
     start_time = datetime.datetime.now()
 
     # Process DUT folder
     print("\n[1/2] Processing DUT folder...")
-    dut_results = process_all_traces(dut_folder, "DUT", num_workers, target_apps)
+    dut_results = process_all_traces(dut_folder, "DUT", num_workers, target_apps, extracted)
     
     # Process REF folder
     print("\n[2/2] Processing REF folder...")
-    ref_results = process_all_traces(ref_folder, "REF", num_workers, target_apps)
+    ref_results = process_all_traces(ref_folder, "REF", num_workers, target_apps, extracted)
     
     # Extract header title từ file đầu tiên
     dut_files = collect_trace_files(dut_folder)
@@ -1314,16 +1369,18 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
 # ---------------------------------------------------------------------------
 
 def main():
-    if len(sys.argv) not in [3, 4]:
-        print("Usage: python execution_sql_batch.py <dut_folder> <ref_folder> [num_workers]")
-        print("  num_workers: Number of parallel processes (default: 4)")
-        sys.exit(1)
+    import argparse
     
-    dut_folder = sys.argv[1]
-    ref_folder = sys.argv[2]
+    parser = argparse.ArgumentParser(description='Batch Execution Time Analysis')
+    parser.add_argument('dut_folder', help='Path to DUT folder')
+    parser.add_argument('ref_folder', help='Path to REF folder')
+    parser.add_argument('--extracted', action='store_true', 
+                        help='Set if Bugreport files are already extracted to folders')
+    
+    args = parser.parse_args()
     
     try:
-        run_analysis(dut_folder, ref_folder)
+        run_analysis(args.dut_folder, args.ref_folder, extracted=args.extracted)
     except Exception as e:
         print(f"\n[ERROR] Analysis failed: {e}")
         traceback.print_exc()
