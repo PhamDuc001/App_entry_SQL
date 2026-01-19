@@ -195,33 +195,59 @@ def group_traces_by_app(trace_files: List[str], target_apps: List[str] = None) -
 _BUGREPORT_MAPPINGS = {}
 _ALL_FILES_SORTED = []
 
+# def _process_single_trace_worker(args):
+#     """
+#     Worker function cho multiprocessing.
+#     Sử dụng global _BUGREPORT_MAPPINGS để lấy pid_mapping.
+#     """
+#     file_path, occurrence, app_name = args
+#     filename = Path(file_path).stem
+#     config = TraceProcessorConfig(bin_path=TRACE_PROCESSOR_BIN)
+    
+#     # Tìm pid_mapping tương ứng cho file này
+#     pid_mapping = None
+#     if _BUGREPORT_MAPPINGS and _ALL_FILES_SORTED:
+#         pid_mapping = get_bugreport_for_log(
+#             file_path, 
+#             _BUGREPORT_MAPPINGS, 
+#             _ALL_FILES_SORTED
+#         )
+    
+#     try:
+#         with TraceProcessor(trace=convert_trace(file_path), config=config) as tp:
+#             metrics = analyze_trace(tp, file_path, pid_mapping)
+#             category = 'entry' if occurrence % 2 == 1 else 'reentry'
+#             return (app_name, occurrence, category, metrics, filename)
+#     except Exception as e:
+#         print(f"    [ERROR] {Path(file_path).name}: {e}")
+#         return (app_name, occurrence, 'entry' if occurrence % 2 == 1 else 'reentry', None, filename)
+
 def _process_single_trace_worker(args):
     """
     Worker function cho multiprocessing.
-    Sử dụng global _BUGREPORT_MAPPINGS để lấy pid_mapping.
+    [UPDATED] Nhận trực tiếp pid_mapping từ tham số, không dùng biến Global.
     """
-    file_path, occurrence, app_name = args
+    # Unpack thêm tham số pid_mapping
+    file_path, occurrence, app_name, pid_mapping = args 
+    
     filename = Path(file_path).stem
     config = TraceProcessorConfig(bin_path=TRACE_PROCESSOR_BIN)
     
-    # Tìm pid_mapping tương ứng cho file này
-    pid_mapping = None
-    if _BUGREPORT_MAPPINGS and _ALL_FILES_SORTED:
-        pid_mapping = get_bugreport_for_log(
-            file_path, 
-            _BUGREPORT_MAPPINGS, 
-            _ALL_FILES_SORTED
-        )
+    # DEBUG: Kiểm tra xem worker có nhận được mapping không
+    # if pid_mapping:
+    #     print(f"    [DEBUG Worker] {filename} received mapping with {len(pid_mapping)} entries")
     
     try:
         with TraceProcessor(trace=convert_trace(file_path), config=config) as tp:
+            # Truyền pid_mapping vào analyze_trace
             metrics = analyze_trace(tp, file_path, pid_mapping)
             category = 'entry' if occurrence % 2 == 1 else 'reentry'
             return (app_name, occurrence, category, metrics, filename)
     except Exception as e:
         print(f"    [ERROR] {Path(file_path).name}: {e}")
+        # import traceback
+        # traceback.print_exc()
         return (app_name, occurrence, 'entry' if occurrence % 2 == 1 else 'reentry', None, filename)
-
 
 def process_single_trace(args: Tuple[str, int, str], pid_mapping: Dict[int, str] = None) -> Tuple[str, int, str, Optional[Dict[str, Any]], str]:
     """
@@ -248,45 +274,39 @@ def process_single_trace(args: Tuple[str, int, str], pid_mapping: Dict[int, str]
         return (app_name, occurrence, 'entry' if occurrence % 2 == 1 else 'reentry', None, filename)
 
 
+
+# [File: execution_sql.py] -> function process_all_traces
+
 def process_all_traces(folder_path: str, label: str, num_workers: int = 8, 
                        target_apps: List[str] = None, extracted: bool = False) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
     """
-    Xử lý tất cả traces trong folder với multiprocessing và phân loại theo app và entry/re-entry.
-    
-    Args:
-        folder_path: Đường dẫn folder chứa traces
-        label: "DUT" hoặc "REF"
-        num_workers: Số lượng processes chạy song song (default: 8)
-        target_apps: Danh sách apps cần xử lý (optional)
-        extracted: True nếu các Bugreport đã được giải nén thành folder
-    
-    Returns:
-        Dict[app_name, Dict["entry"|"reentry", List[metrics_dict]]]
+    Xử lý tất cả traces.
+    [UPDATED] Truyền 'occurrence' để map bugreport theo thứ tự Cycle.
     """
-    global _BUGREPORT_MAPPINGS, _ALL_FILES_SORTED
-    
     trace_files = collect_trace_files(folder_path)
     app_groups = group_traces_by_app(trace_files, target_apps)
     
-    # Thu thập bugreport mappings cho folder này
     print(f"\n[{label}] Collecting bugreport mappings (extracted={extracted})...")
-    _BUGREPORT_MAPPINGS = collect_bugreport_mappings(folder_path, extracted)
-    print(f"[{label}] Found {len(_BUGREPORT_MAPPINGS)} bugreport(s) with PID mappings")
+    bugreport_mappings = collect_bugreport_mappings(folder_path, extracted)
+    print(f"[{label}] Found {len(bugreport_mappings)} bugreport(s) with PID mappings")
     
-    # Lưu danh sách tất cả files để xác định bugreport tương ứng
-    folder = Path(folder_path)
-    _ALL_FILES_SORTED = sorted([str(f) for f in folder.iterdir() if f.is_file() or f.is_dir()])
+    # Không cần all_files_sorted nữa
     
-    # Chuẩn bị danh sách tasks cho multiprocessing
     tasks = []
     for app_name, file_list in app_groups.items():
         for file_path, occurrence in file_list:
-            tasks.append((file_path, occurrence, app_name))
+            # [LOGIC MỚI] Truyền occurrence vào để xác định Cycle
+            pid_mapping = get_bugreport_for_log(
+                file_path, 
+                bugreport_mappings, 
+                occurrence=occurrence # <--- QUAN TRỌNG
+            )
+            
+            tasks.append((file_path, occurrence, app_name, pid_mapping))
     
     print(f"[{label}] Processing {len(tasks)} trace files with {num_workers} workers...")
     
-    # Chạy song song với Pool
-    results = defaultdict(lambda: {'entry': [None] * 100, 'reentry': [None] * 100})  # Pre-allocate
+    results = defaultdict(lambda: {'entry': [None] * 100, 'reentry': [None] * 100})
     
     pool = Pool(processes=num_workers)
     try:
@@ -302,7 +322,6 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
         pool.close() 
         pool.join()  
     
-    # Loại bỏ None values và trim lists
     cleaned_results = {}
     for app_name, categories in results.items():
         cleaned_results[app_name] = {
@@ -490,6 +509,8 @@ def create_sheet(
     fmt_header_diff = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFFF99", "border": 1, "border_color": "#000000"})
     fmt_label = wb.add_format({"align": "left", "border": 1, "border_color": "#000000"})
     fmt_label_highlight = wb.add_format({"align": "left", "italic": True, "font_color": "#008000"}) 
+    # Format riêng cho "Start proc" (Căn trái ngang, giữa dọc)
+    fmt_start_proc = wb.add_format({"align": "left", "valign": "vcenter", "border": 1, "border_color": "#000000"})
     fmt_val = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
     fmt_text = wb.add_format({"align": "center", "border": 1, "border_color": "#000000"})
     fmt_diff_slow = wb.add_format({"num_format": "0.000", "align": "center", "bg_color": "#FFB3B3", "border": 1, "border_color": "#000000"})
@@ -649,11 +670,118 @@ def create_sheet(
                 fmt_diff = fmt_diff_fast  
             else:
                 fmt_diff = fmt_diff_normal 
-            write_value_or_empty(ws, row_idx, col_idx, diff_val, fmt_diff)
+            ws.write(row_idx, col_idx, diff_val, fmt_diff)
         else:
             ws.write(row_idx, col_idx, "", fmt_text)
 
         row_idx += 1
+    
+    # ---------------------------------------------------------
+    # === [NEW] Process Start Overlap Section (Merged into Sequence Table) ===
+    # ---------------------------------------------------------
+    
+    # 1. Chuẩn bị dữ liệu Process Names cho từng cột
+    # Map: {column_index: [list_of_process_names]}
+    proc_overlap_map = {} 
+    max_proc_rows = 0 # Số dòng cần thiết để hiển thị hết process nhiều nhất
+    
+    current_col = 1
+    
+    # --- Thu thập dữ liệu DUT ---
+    for i in range(max_cycles):
+        procs = []
+        if i < len(dut_cycles):
+            # Lấy data từ 2 nguồn: Abnormal & Background
+            abnormal = dut_cycles[i].get("Abnormal_Process_Data", [])
+            bg = dut_cycles[i].get("Background_Process_States", [])
+            
+            # Dùng set để lọc trùng
+            names = set()
+            for p in abnormal:
+                names.add(p.get('proc_name', ''))
+            for p in bg:
+                names.add(p.get('Thread name', ''))
+            
+            # Lọc bỏ rỗng và sort
+            procs = sorted([n for n in names if n and n != 'Unknown'])
+            
+        proc_overlap_map[current_col] = procs
+        if len(procs) > max_proc_rows:
+            max_proc_rows = len(procs)
+        current_col += 1
+        
+    # Bỏ qua cột DUT Avg
+    current_col += 1
+    
+    # --- Thu thập dữ liệu REF ---
+    for i in range(max_cycles):
+        procs = []
+        if i < len(ref_cycles):
+            abnormal = ref_cycles[i].get("Abnormal_Process_Data", [])
+            bg = ref_cycles[i].get("Background_Process_States", [])
+            
+            names = set()
+            for p in abnormal:
+                names.add(p.get('proc_name', ''))
+            for p in bg:
+                names.add(p.get('Thread name', ''))
+            
+            procs = sorted([n for n in names if n and n != 'Unknown'])
+            
+        proc_overlap_map[current_col] = procs
+        if len(procs) > max_proc_rows:
+            max_proc_rows = len(procs)
+        current_col += 1
+        
+    # Bỏ qua REF Avg và Diff
+    current_col += 2 # Skip REF Avg, Diff
+    if not proc_overlap_map or max_proc_rows == 0:
+        pass
+    else:
+        # 2. Vẽ Header cho phần này
+        # Dòng tiêu đề: "Process start overlap"
+        # ws.write(row_idx, 0, "Process start overlap", fmt_label_highlight)
+        # for c in range(1, current_col):
+        #     ws.write(row_idx, c, "", fmt_text)
+        last_col = 2 * max_cycles + 3  # Index của cột Diff
+        ws.merge_range(row_idx, 0, row_idx, last_col, "", fmt_text)
+        
+        row_idx += 1
+        # 3. Vẽ dữ liệu (Dynamic Rows) với merge logic cho "Start proc"
+        # Nếu không có process nào overlap thì ít nhất cũng hiện dòng label
+        total_rows_to_draw = max(1, max_proc_rows)
+        
+        # Merge cột A cho "Start proc" nếu có nhiều dòng
+        if total_rows_to_draw > 1:
+            ws.merge_range(row_idx, 0, row_idx + total_rows_to_draw - 1, 0, "Start proc", fmt_start_proc)
+        else:
+            ws.write(row_idx, 0, "Start proc", fmt_start_proc)
+                
+        for r in range(total_rows_to_draw):
+            # Các cột dữ liệu
+            # Loop qua map đã chuẩn bị
+            for c_idx, p_list in proc_overlap_map.items():
+                if r < len(p_list):
+                    # Ghi tên process
+                    ws.write(row_idx, c_idx, p_list[r], fmt_text)
+                else:
+                    # Ô trống có viền
+                    ws.write(row_idx, c_idx, "", fmt_text)
+                    
+            # Fill viền cho các cột Avg/Diff (để bảng liền mạch)
+            # DUT Avg index = 1 + max_cycles
+            dut_avg_idx = 1 + max_cycles
+            ws.write(row_idx, dut_avg_idx, "", fmt_val)
+                    
+            # REF Avg index
+            ref_avg_idx = dut_avg_idx + 1 + max_cycles
+            ws.write(row_idx, ref_avg_idx, "", fmt_val)
+                    
+            # Diff index
+            diff_idx = ref_avg_idx + 1
+            ws.write(row_idx, diff_idx, "", fmt_val)
+                    
+            row_idx += 1
 
     # ---------------------------------------------------------
     # === Abnormal Process & Background Activity Table ===
@@ -758,14 +886,14 @@ def create_sheet(
     # === Top CPU Usage Tables (Parallel: Process [A-D] vs Thread [F-I]) ===
     # =========================================================================
     row_idx += 3
-    
+
     # Load Data
     all_dut_proc = [cycle.get("CPU_Process_Data", []) for cycle in dut_cycles]
     all_ref_proc = [cycle.get("CPU_Process_Data", []) for cycle in ref_cycles]
-    
+
     all_dut_thread = [cycle.get("CPU_Thread_Data", []) for cycle in dut_cycles]
     all_ref_thread = [cycle.get("CPU_Thread_Data", []) for cycle in ref_cycles]
-    
+
     # Formats
     fmt_cpu_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFE4B5", "border": 1})
     fmt_cpu_sub = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFF8DC", "border": 1})
@@ -776,27 +904,122 @@ def create_sheet(
     fmt_diff_norm = wb.add_format({"num_format": "0.000", "align": "center", "border": 1})
 
     max_cycles = max(len(all_dut_proc), len(all_ref_proc))
-    
+
     for cycle_idx in range(max_cycles):
         # ---------------------------------------------------------
-        # PREPARE DATA FOR LEFT TABLE (PROCESS)
+        # PREPARE DATA FOR LEFT TABLE (PROCESS) - [UPDATED CROSS MAPPING]
         # ---------------------------------------------------------
         dut_p = all_dut_proc[cycle_idx] if cycle_idx < len(all_dut_proc) else []
         ref_p = all_ref_proc[cycle_idx] if cycle_idx < len(all_ref_proc) else []
         
+        # Lấy Mapping của cả DUT và REF cho cycle hiện tại
+        dut_mapping = dut_cycles[cycle_idx].get("PID_Mapping", {}) if cycle_idx < len(dut_cycles) else {}
+        ref_mapping = ref_cycles[cycle_idx].get("PID_Mapping", {}) if cycle_idx < len(ref_cycles) else {}
+        
+        # Tạo Reverse Mapping cho REF: {"ProcessName": PID}
+        ref_name_to_pid = {name: pid for pid, name in ref_mapping.items()}
+        
+        # DEBUG
+        print(f"\n[DEBUG CYCLE {cycle_idx}]")
+        print(f"  DUT Mapping: {len(dut_mapping)} entries")
+        print(f"  REF Mapping: {len(ref_mapping)} entries")
+        print(f"  REF name_to_pid: {len(ref_name_to_pid)} entries")
+
         merged_p = {}
-        for x in dut_p: merged_p[x['proc_name']] = {'dut': x['dur_ms'], 'ref': 0.0}
+        
+        # 1. Process DUT Data
+        for x in dut_p:
+            proc_name = x['proc_name']
+            dut_val = x['dur_ms']
+            ref_val = 0.0
+            
+            # Case A: Tìm exact match trên REF (process name giống hệt)
+            found_exact = False
+            for r in ref_p:
+                if r['proc_name'] == proc_name:
+                    ref_val = r['dur_ms']
+                    found_exact = True
+                    print(f"  ✓ Exact match: {proc_name} -> DUT={dut_val:.2f}ms, REF={ref_val:.2f}ms")
+                    break
+            
+            # Case B: Nếu không tìm thấy exact match, check cross-mapping
+            if not found_exact:
+                # B.1: Nếu DUT có dạng "PID-xxx", resolve tên thật từ dut_mapping
+                if proc_name.startswith("PID-"):
+                    try:
+                        dut_pid = int(proc_name.replace("PID-", ""))
+                        real_name = dut_mapping.get(dut_pid)
+                        
+                        if real_name:
+                            # Tìm PID tương ứng trên REF
+                            ref_pid = ref_name_to_pid.get(real_name)
+                            
+                            if ref_pid:
+                                # Tìm "PID-xxx" trong ref_p
+                                ref_key = f"PID-{ref_pid}"
+                                for r in ref_p:
+                                    if r['proc_name'] == ref_key:
+                                        ref_val = r['dur_ms']
+                                        # Update proc_name để hiển thị tên thật
+                                        proc_name = real_name
+                                        print(f"  ✓ Cross-map (DUT PID-{dut_pid}): {real_name} -> REF PID-{ref_pid} -> {ref_val:.2f}ms")
+                                        break
+                            else:
+                                # REF không có process này, update tên nhưng giữ ref_val=0
+                                proc_name = real_name
+                                print(f"  ⚠ DUT has '{real_name}' but not found on REF")
+                        else:
+                            print(f"  ⚠ DUT PID-{dut_pid} not in dut_mapping")
+                            
+                    except (ValueError, TypeError) as e:
+                        print(f"  ✗ Error parsing PID from '{proc_name}': {e}")
+                
+                # B.2: Nếu DUT có tên thật, check xem REF có dạng "PID-xxx" không
+                else:
+                    ref_pid = ref_name_to_pid.get(proc_name)
+                    if ref_pid:
+                        ref_key = f"PID-{ref_pid}"
+                        for r in ref_p:
+                            if r['proc_name'] == ref_key:
+                                ref_val = r['dur_ms']
+                                print(f"  ✓ Reverse-map: {proc_name} -> REF PID-{ref_pid} -> {ref_val:.2f}ms")
+                                break
+            
+            merged_p[proc_name] = {'dut': dut_val, 'ref': ref_val}
+
+        # 2. Process REF Data (chỉ thêm những process chưa có trong merged_p)
         for x in ref_p:
             name = x['proc_name']
-            if name not in merged_p: merged_p[name] = {'dut': 0.0, 'ref': 0.0}
-            merged_p[name]['ref'] = x['dur_ms']
             
+            # Nếu REF có dạng "PID-xxx", resolve tên thật
+            real_name = name
+            if name.startswith("PID-"):
+                try:
+                    pid_num = int(name.replace("PID-", ""))
+                    resolved = ref_mapping.get(pid_num)
+                    if resolved:
+                        real_name = resolved
+                except:
+                    pass
+            
+            # Chỉ thêm nếu chưa có trong merged_p
+            if real_name not in merged_p:
+                merged_p[real_name] = {'dut': 0.0, 'ref': x['dur_ms']}
+                print(f"  + REF-only: {real_name} -> {x['dur_ms']:.2f}ms")
+
+        # 3. Flatten to List & Sort
         final_proc = []
         for name, v in merged_p.items():
-            final_proc.append({'name': name, 'dut': v['dut'], 'ref': v['ref'], 'diff': v['dut'] - v['ref']})
+            final_proc.append({
+                'name': name, 
+                'dut': v['dut'], 
+                'ref': v['ref'], 
+                'diff': v['dut'] - v['ref']
+            })
         
-        # Sort Diff -> Take Top 10
         top_proc = sorted(final_proc, key=lambda x: x['diff'], reverse=True)[:10]
+
+        # [Phần code vẽ bảng giữ nguyên...]
 
         # ---------------------------------------------------------
         # PREPARE DATA FOR RIGHT TABLE (THREAD)

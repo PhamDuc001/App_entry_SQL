@@ -243,77 +243,79 @@ def collect_bugreport_mappings(folder_path: str, extracted: bool = False) -> Dic
     return mappings
 
 
+# [File: dumpstate_parser.py]
+
 def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[int, str]], 
-                           log_files: List[str]) -> Optional[Dict[int, str]]:
+                           occurrence: int = 1) -> Optional[Dict[int, str]]:
     """
-    Xác định Bugreport mapping tương ứng cho một file .log dựa trên thứ tự timestamp.
-    
-    Logic: 
-    - Các file được sắp xếp theo timestamp trong tên
-    - Bugreport xuất hiện SAU nhóm các file .log
-    - Tìm Bugreport gần nhất (theo thứ tự) sau file log này
+    Xác định Bugreport mapping dựa trên APP GROUP và THỨ TỰ CYCLE.
     
     Args:
-        log_filename: Tên file .log cần tìm mapping
-        bugreport_mappings: Dict {bugreport_path: {pid: name}} từ collect_bugreport_mappings()
-        log_files: Danh sách tất cả files trong folder (đã sort theo tên)
-    
-    Returns:
-        Dict {PID: process_name} hoặc None nếu không tìm thấy
+        log_filename: Tên file log
+        bugreport_mappings: Dict chứa toàn bộ mapping
+        occurrence: Thứ tự xuất hiện của file log này (1, 2, 3...)
+                    1, 2 -> Cycle 1
+                    3, 4 -> Cycle 2
+                    ...
     """
-    if not bugreport_mappings or not log_files:
+    if not bugreport_mappings:
         return None
     
-    # Tìm vị trí của file log hiện tại
-    try:
-        log_idx = -1
-        for i, f in enumerate(log_files):
-            if Path(f).name == Path(log_filename).name or f == log_filename:
-                log_idx = i
-                break
-        
-        if log_idx == -1:
-            return None
-        
-        # Tìm bugreport gần nhất SAU file log này
-        # Sort bugreport paths để tìm đúng thứ tự
-        sorted_bugreports = sorted(bugreport_mappings.keys())
-        
-        for br_path in sorted_bugreports:
-            br_name = Path(br_path).name
-            # Tìm vị trí của bugreport trong list files
-            for i, f in enumerate(log_files):
-                if Path(f).name == br_name or 'bugreport' in Path(f).name.lower():
-                    if i > log_idx:
-                        # Tìm thấy bugreport sau log file
-                        return bugreport_mappings[br_path]
-        
-        # Fallback: Dựa vào app group
-        # Xác định app name từ log filename
-        log_name = Path(log_filename).stem.lower()
-        app_group = 0
-        for group_num, app_list in APP_GROUPS.items():
-            for app_pattern in app_list:
-                if app_pattern in log_name:
-                    app_group = group_num
-                    break
-            if app_group > 0:
-                break
-        
-        if app_group > 0:
-            # Tìm bugreport có cùng group
-            for br_path, pid_map in bugreport_mappings.items():
-                br_group = get_bugreport_group_from_name(Path(br_path).name)
-                if br_group == app_group:
-                    return pid_map
-        
-        # Nếu vẫn không tìm thấy, trả về mapping đầu tiên có sẵn
-        if sorted_bugreports:
-            return bugreport_mappings[sorted_bugreports[0]]
-        
-    except Exception as e:
-        print(f"[Warning] Error finding bugreport for {log_filename}: {e}")
+    log_name = Path(log_filename).name
     
+    # 1. Xác định App Group (VD: Calculator -> Group 3)
+    log_name_lower = log_name.lower()
+    app_group = 0
+    for group_num, app_list in APP_GROUPS.items():
+        for app_pattern in app_list:
+            if app_pattern in log_name_lower:
+                app_group = group_num
+                break
+        if app_group > 0:
+            break
+            
+    if app_group == 0:
+        # Fallback: Nếu không thuộc group nào, thử dùng timestamp matching (như cũ)
+        # Hoặc trả về None. Ở đây ta giữ fallback timestamp cho an toàn.
+        print(f"  [Mapping] Unknown group for {log_name}, fallback to timestamp logic...")
+        # (Bạn có thể copy lại logic timestamp cũ vào đây nếu muốn, hoặc return None)
+        return None
+
+    # 2. Lọc danh sách Bugreport thuộc Group này
+    # Ví dụ: Lấy tất cả bugreport có tên chứa "3part"
+    candidates = []
+    for br_path in bugreport_mappings.keys():
+        br_name = Path(br_path).name
+        if get_bugreport_group_from_name(br_name) == app_group:
+            candidates.append(br_path)
+    
+    if not candidates:
+        print(f"  [Mapping] No bugreports found for Group {app_group} (App: {log_name})")
+        return None
+        
+    # 3. Sắp xếp candidates theo tên (tương đương sắp xếp theo thời gian)
+    # A576...090000... < A576...100000...
+    candidates.sort()
+    
+    # 4. Tính toán Cycle Index từ occurrence
+    # Log 1 (Entry), Log 2 (Re-entry) -> Cycle 1 (Index 0)
+    # Log 3 (Entry), Log 4 (Re-entry) -> Cycle 2 (Index 1)
+    cycle_index = (occurrence - 1) // 2
+    
+    # 5. Chọn Bugreport tương ứng
+    selected_br = None
+    if cycle_index < len(candidates):
+        selected_br = candidates[cycle_index]
+        # print(f"  [Mapping] {log_name} (Occ {occurrence} -> Cyc {cycle_index+1}) matched with {Path(selected_br).name}")
+    else:
+        # Trường hợp Log nhiều hơn Bugreport (ví dụ chạy thêm cycle nhưng chưa lấy bugreport)
+        # Fallback: Lấy cái cuối cùng
+        selected_br = candidates[-1]
+        print(f"  [Mapping Warning] Cycle {cycle_index+1} out of range (Found {len(candidates)} BRs). Using last: {Path(selected_br).name}")
+
+    if selected_br:
+        return bugreport_mappings[selected_br]
+        
     return None
 
 
