@@ -907,24 +907,73 @@ def create_sheet(
 
     for cycle_idx in range(max_cycles):
         # ---------------------------------------------------------
-        # PREPARE DATA FOR LEFT TABLE (PROCESS)
+        # PREPARE DATA FOR LEFT TABLE (PROCESS) - [2-TIER MATCHING]
+        # Priority 1: Match by sql_name
+        # Priority 2: Match by dumpstate_name
         # ---------------------------------------------------------
         dut_p = all_dut_proc[cycle_idx] if cycle_idx < len(all_dut_proc) else []
         ref_p = all_ref_proc[cycle_idx] if cycle_idx < len(all_ref_proc) else []
         
-        merged_p = {}
-        for x in dut_p: merged_p[x['proc_name']] = {'dut': x['dur_ms'], 'ref': 0.0}
-        for x in ref_p:
-            name = x['proc_name']
-            if name not in merged_p: merged_p[name] = {'dut': 0.0, 'ref': 0.0}
-            merged_p[name]['ref'] = x['dur_ms']
-            
-        final_proc = []
-        for name, v in merged_p.items():
-            final_proc.append({'name': name, 'dut': v['dut'], 'ref': v['ref'], 'diff': v['dut'] - v['ref']})
+        # Build lookup maps for REF
+        ref_by_sql = {x['sql_name']: x for x in ref_p}
+        ref_by_dump = {x['dumpstate_name']: x for x in ref_p if x.get('dumpstate_name')}
         
-        # Sort Diff -> Take Top 10
-        top_proc = sorted(final_proc, key=lambda x: x['diff'], reverse=True)[:10]
+        matched_pairs = []
+        used_ref_sql_names = set()  # Track which REF entries have been matched
+        
+        # Step 1: Iterate through DUT processes
+        for dut_item in dut_p:
+            sql_name = dut_item['sql_name']
+            dump_name = dut_item.get('dumpstate_name', '')
+            dut_dur = dut_item['dur_ms']
+            
+            ref_dur = 0.0
+            display_name = sql_name  # Default display name
+            
+            # Priority 1: Match by SQL name (exact match)
+            if sql_name in ref_by_sql:
+                ref_dur = ref_by_sql[sql_name]['dur_ms']
+                used_ref_sql_names.add(sql_name)
+                
+            # Priority 2: Match by dumpstate name (when SQL didn't match)
+            elif dump_name and dump_name in ref_by_dump:
+                ref_item = ref_by_dump[dump_name]
+                ref_dur = ref_item['dur_ms']
+                used_ref_sql_names.add(ref_item['sql_name'])
+                display_name = dump_name  # Use dumpstate name for display
+                
+            # No match: REF = 0
+            else:
+                if sql_name.startswith('PID-') and dump_name and not dump_name.startswith('PID-'):
+                    display_name = dump_name
+            
+            matched_pairs.append({
+                'name': display_name,
+                'dut': dut_dur,
+                'ref': ref_dur,
+                'diff': dut_dur - ref_dur
+            })
+        
+        # Step 2: Add REF-only processes (not matched by DUT)
+        for ref_item in ref_p:
+            if ref_item['sql_name'] not in used_ref_sql_names:
+                sql_name = ref_item['sql_name']
+                dump_name = ref_item.get('dumpstate_name', '')
+                
+                if sql_name.startswith('PID-') and dump_name and not dump_name.startswith('PID-'):
+                    display_name = dump_name
+                else:
+                    display_name = sql_name
+                
+                matched_pairs.append({
+                    'name': display_name,
+                    'dut': 0.0,
+                    'ref': ref_item['dur_ms'],
+                    'diff': -ref_item['dur_ms']
+                })
+        
+        # Sort by Diff (descending) and take Top 10
+        top_proc = sorted(matched_pairs, key=lambda x: x['diff'], reverse=True)[:10]
 
         # ---------------------------------------------------------
         # PREPARE DATA FOR RIGHT TABLE (THREAD)
