@@ -614,7 +614,10 @@ def process_loadapk_data(df) -> List[Dict[str, Any]]:
 # ==============================================================
 # --- 1. Query cho Process (Group by Process Name) ---
 def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int, cpu_cores: List[int]):
-    """Query top CPU usage by process. Returns raw PID for processes without name."""
+    """
+    Query top CPU usage by process. 
+    [UPDATED] Trả về thêm cột 'raw_pid' để Python có thể map lại tên nếu cần.
+    """
     if not cpu_cores or dur_time <= 0: return None
     cpu_cores_str = ','.join(map(str, cpu_cores))
     
@@ -623,8 +626,15 @@ def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int
     CREATE VIEW cpu_view_proc AS
     SELECT 
         sched_slice.ts, sched_slice.dur, sched_slice.cpu,
-        COALESCE(process.name, main_thread.name) as proc_name,
-        process.pid as raw_pid
+        COALESCE(
+            process.name, 
+            CASE 
+                WHEN main_thread.name LIKE '%binder%' OR main_thread.name LIKE '%kworker%' THEN NULL
+                ELSE main_thread.name
+            END, 
+            'PID-' || process.pid
+        ) as proc_name,
+        process.pid as raw_pid  -- [QUAN TRỌNG] Cần cột này để mapping hoạt động
     FROM sched_slice 
     JOIN thread USING (utid) JOIN process USING (upid)
     LEFT JOIN thread AS main_thread ON (process.pid = main_thread.tid)
@@ -638,14 +648,13 @@ def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int
     
     SELECT 
         proc_name,
-        raw_pid,
+        raw_pid, -- [QUAN TRỌNG] Chọn cột raw_pid ra kết quả cuối
         SUM(dur)/1e6 AS dur_ms,
         COUNT(*) AS Occurences, 
         ROUND(SUM(dur) * 100.0 / {dur_time}*7, 2) AS dur_percent
     FROM target_proc
     WHERE cpu IN ({cpu_cores_str})
     GROUP BY COALESCE(proc_name, raw_pid)
-    --GROUP BY proc_name, raw_pid
     ORDER BY dur_ms DESC;
     """
     df = query_df(tp, sql)
@@ -656,47 +665,53 @@ def process_cpu_data_process(df, pid_mapping: Dict[int, str] = None) -> List[Dic
     """
     Process CPU data for processes, with optional PID to process name mapping.
     
-    Args:
-        df: DataFrame from get_top_cpu_usage_process()
-        pid_mapping: Optional dict {PID: process_name} from dumpstate
+    [UPDATED] Returns enhanced data structure:
+    - sql_name: Original name from SQL (may be PID-XXX or real name like composer@2.4-se)
+    - dumpstate_name: Full process name from bugreport dumpstate (e.g., android.hardware.graphics.composer@2.4-service)
+    - raw_pid: Process ID for additional lookups
+    - dur_ms, occurences, dur_percent: Performance metrics
     
-    Returns:
-        List of dicts with proc_name, dur_ms, occurences, dur_percent
+    Cross-mapping giữa DUT-REF sử dụng cả sql_name và dumpstate_name.
     """
-    if df is None or df.empty: return []
+    if df is None or df.empty: 
+        return []
     
     result = []
     for _, row in df.iterrows():
-        proc_name = row.get('proc_name')
+        sql_name = str(row.get('proc_name', ''))  # Original name from SQL
         raw_pid = row.get('raw_pid')
         
-        # Kiểm tra proc_name là None, NaN, hoặc empty string
-        is_proc_name_empty = (
-            proc_name is None or 
-            pd.isna(proc_name) or 
-            (isinstance(proc_name, str) and proc_name.strip() == '')
-        )
+        # Lookup dumpstate_name from pid_mapping
+        dumpstate_name = None
+        if pid_mapping and raw_pid is not None:
+            try:
+                pid_int = int(raw_pid)
+                if pid_int in pid_mapping:
+                    dumpstate_name = pid_mapping[pid_int]
+            except (ValueError, TypeError):
+                pass
         
-        if is_proc_name_empty:
-            if pid_mapping and raw_pid is not None and not pd.isna(raw_pid):
-                # Thử map PID -> process name từ dumpstate
-                pid_int = int(raw_pid) if raw_pid else 0
-                proc_name = pid_mapping.get(pid_int, f'PID-{pid_int}')
-            else:
-                # Fallback: sử dụng format PID-xxx
-                if raw_pid is not None and not pd.isna(raw_pid):
-                    proc_name = f'PID-{int(raw_pid)}'
-                else:
-                    proc_name = 'Unknown'
-        else:
-            proc_name = str(proc_name)
+        # Fallback dumpstate_name to sql_name if not found
+        if not dumpstate_name:
+            dumpstate_name = sql_name if not sql_name.startswith("PID-") else None
+        
+        # Final fallback: if dumpstate_name still None, use PID format
+        if not dumpstate_name:
+            dumpstate_name = f'PID-{int(raw_pid)}' if raw_pid is not None else 'Unknown'
         
         result.append({
+            'sql_name': sql_name,                    # Original SQL name
+            'dumpstate_name': dumpstate_name,        # Full name from dumpstate
+            'raw_pid': int(raw_pid) if raw_pid is not None else None,
             'dur_ms': float(row['dur_ms']),
-            'proc_name': proc_name,
             'occurences': int(row['Occurences']),
             'dur_percent': float(row['dur_percent'])
         })
+    
+    # Debug output
+    print(f"[CPU Process] Processed {len(result)} entries")
+    for item in result[:5]:
+        print(f"  SQL: {item['sql_name'][:30]:30} | Dump: {item['dumpstate_name'][:40]:40} | {item['dur_ms']:.2f}ms")
     
     return result
 
@@ -1352,7 +1367,14 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
     bg_end_ts = end_ts if end_ts else 0
     metrics["Background_Process_States"] = get_background_process_states(tp, bg_start_ts, bg_end_ts)
 
-
+    metrics["PID_Mapping"] = pid_mapping if pid_mapping else {}
+    
+    # DEBUG: In ra thông tin PID_Mapping để kiểm tra
+    if pid_mapping:
+        print(f"[DEBUG] PID_Mapping saved: {len(pid_mapping)} entries")
+        print(f"[DEBUG] Sample PID_Mapping: {dict(list(pid_mapping.items())[:5])}")
+    else:
+        print("[DEBUG] No PID_Mapping available")
+    
     metrics["App Package"] = app_pkg 
     return metrics
-
