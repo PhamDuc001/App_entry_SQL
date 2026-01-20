@@ -120,7 +120,11 @@ class MainWindow(QWidget):
         self.resize(1000, 850)
         self.setAcceptDrops(True)
         self.root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.app_buttons = [] # Lưu danh sách các nút app để check state
+        self.app_buttons = []  # Lưu danh sách các nút app để check state
+        
+        # Multi-mode queue
+        self.mode_queue = []
+        self.current_mode_index = 0
         
         self.setup_ui()
         self.load_stylesheet()
@@ -159,8 +163,9 @@ class MainWindow(QWidget):
         header_layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
         main_layout.addLayout(header_layout)
 
-        # 2. MODE SELECTION
+        # 2. MODE SELECTION (Multi-select enabled)
         self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(False)  # ← Cho phép chọn nhiều mode
         mode_grid = QGridLayout()
         mode_grid.setSpacing(15)
 
@@ -169,7 +174,7 @@ class MainWindow(QWidget):
         self.btn_mem = self.create_mode_btn("💾 MEMORY", "btnModeMem")
         self.btn_pb = self.create_mode_btn("🚀 PAGEBOOST", "btnModePb")
         
-        self.btn_exec.setChecked(True)
+        self.btn_exec.setChecked(True)  # Default check Execution
 
         mode_grid.addWidget(self.btn_exec, 0, 0)
         mode_grid.addWidget(self.btn_reac, 0, 1)
@@ -291,11 +296,16 @@ class MainWindow(QWidget):
         dut = self.txt_dut.text().strip()
         ref = self.txt_ref.text().strip()
         
-        if self.btn_exec.isChecked(): mode = "execution"
-        elif self.btn_reac.isChecked(): mode = "reaction"
-        elif self.btn_mem.isChecked(): mode = "memory"
-        elif self.btn_pb.isChecked(): mode = "pageboost"
-        else: mode = "execution"
+        # Collect selected modes (multi-select)
+        selected_modes = []
+        if self.btn_exec.isChecked(): selected_modes.append("execution")
+        if self.btn_reac.isChecked(): selected_modes.append("reaction")
+        if self.btn_mem.isChecked(): selected_modes.append("memory")
+        if self.btn_pb.isChecked(): selected_modes.append("pageboost")
+        
+        if not selected_modes:
+            QMessageBox.warning(self, "Cảnh báo", "Vui lòng chọn ít nhất 1 mode!")
+            return
 
         if not os.path.isdir(dut):
             QMessageBox.critical(self, "Lỗi", "Đường dẫn DUT không hợp lệ!")
@@ -305,21 +315,46 @@ class MainWindow(QWidget):
             return
 
         target_apps = self.get_selected_apps()
-        # Chỉ check list app nếu là mode Execution hoặc Reaction
-        if not target_apps and mode in ["execution", "reaction"]:
-             QMessageBox.warning(self, "Cảnh báo", "Bạn chưa chọn App nào để phân tích!")
-             return
+        # Chỉ check list app nếu có mode Execution hoặc Reaction trong queue
+        needs_apps = any(m in ["execution", "reaction"] for m in selected_modes)
+        if not target_apps and needs_apps:
+            QMessageBox.warning(self, "Cảnh báo", "Bạn chưa chọn App nào để phân tích!")
+            return
 
-        self.btn_start.setEnabled(False)
-        self.btn_start.setText(f"Running {mode.upper()}...")
+        # Store queue and start first mode
+        self.mode_queue = selected_modes
+        self.current_mode_index = 0
         self.txt_log.clear()
-
+        
+        self._run_next_mode()
+    
+    def _run_next_mode(self):
+        """Run the next mode in queue."""
+        if self.current_mode_index >= len(self.mode_queue):
+            # All modes completed
+            self.btn_start.setEnabled(True)
+            self.btn_start.setText("START ANALYSIS PROCESS")
+            QMessageBox.information(self, "Hoàn thành", 
+                f"Đã hoàn thành tất cả {len(self.mode_queue)} mode!")
+            return
+        
+        mode = self.mode_queue[self.current_mode_index]
+        total = len(self.mode_queue)
+        current = self.current_mode_index + 1
+        
+        self.btn_start.setEnabled(False)
+        self.btn_start.setText(f"Running {mode.upper()} ({current}/{total})...")
+        
+        dut = self.txt_dut.text().strip()
+        ref = self.txt_ref.text().strip()
+        target_apps = self.get_selected_apps()
+        
         self.worker = WorkerThread(mode, dut, ref, self.root_dir, target_apps)
         self.worker.log_signal.connect(self.log)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.start()
 
     def on_finished(self):
-        self.btn_start.setEnabled(True)
-        self.btn_start.setText("START ANALYSIS PROCESS")
-        QMessageBox.information(self, "Hoàn thành", "Quá trình phân tích đã kết thúc.")
+        """Called when a mode finishes. Run next mode or complete."""
+        self.current_mode_index += 1
+        self._run_next_mode()

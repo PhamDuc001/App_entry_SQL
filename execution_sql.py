@@ -907,86 +907,24 @@ def create_sheet(
 
     for cycle_idx in range(max_cycles):
         # ---------------------------------------------------------
-        # PREPARE DATA FOR LEFT TABLE (PROCESS) - [NEW 2-TIER MATCHING]
-        # Priority 1: Match by sql_name
-        # Priority 2: Match by dumpstate_name
+        # PREPARE DATA FOR LEFT TABLE (PROCESS)
         # ---------------------------------------------------------
         dut_p = all_dut_proc[cycle_idx] if cycle_idx < len(all_dut_proc) else []
         ref_p = all_ref_proc[cycle_idx] if cycle_idx < len(all_ref_proc) else []
         
-        # Build lookup maps for REF
-        ref_by_sql = {x['sql_name']: x for x in ref_p}
-        ref_by_dump = {x['dumpstate_name']: x for x in ref_p if x['dumpstate_name']}
-        
-        matched_pairs = []
-        used_ref_sql_names = set()  # Track which REF entries have been matched
-        
-        # Step 1: Iterate through DUT processes
-        for dut_item in dut_p:
-            sql_name = dut_item['sql_name']
-            dump_name = dut_item['dumpstate_name']
-            dut_dur = dut_item['dur_ms']
+        merged_p = {}
+        for x in dut_p: merged_p[x['proc_name']] = {'dut': x['dur_ms'], 'ref': 0.0}
+        for x in ref_p:
+            name = x['proc_name']
+            if name not in merged_p: merged_p[name] = {'dut': 0.0, 'ref': 0.0}
+            merged_p[name]['ref'] = x['dur_ms']
             
-            ref_dur = 0.0
-            display_name = sql_name  # Default display name
-            match_type = None
-            
-            # Priority 1: Match by SQL name (exact match)
-            if sql_name in ref_by_sql:
-                ref_dur = ref_by_sql[sql_name]['dur_ms']
-                used_ref_sql_names.add(sql_name)
-                match_type = "SQL"
-                # display_name stays as sql_name
-                
-            # Priority 2: Match by dumpstate name (when SQL didn't match)
-            elif dump_name and dump_name in ref_by_dump:
-                ref_item = ref_by_dump[dump_name]
-                ref_dur = ref_item['dur_ms']
-                used_ref_sql_names.add(ref_item['sql_name'])  # Mark REF as used
-                display_name = dump_name  # Use dumpstate name for display
-                match_type = "DUMP"
-                
-            # No match: REF = 0
-            else:
-                # If DUT sql_name is PID-XXX, prefer dumpstate_name for display
-                if sql_name.startswith('PID-') and dump_name and not dump_name.startswith('PID-'):
-                    display_name = dump_name
-                match_type = "NONE"
-            
-            matched_pairs.append({
-                'name': display_name,
-                'dut': dut_dur,
-                'ref': ref_dur,
-                'diff': dut_dur - ref_dur
-            })
-            
-            # Debug log
-            # print(f"  [{match_type}] {display_name[:35]:35} DUT={dut_dur:.2f}ms REF={ref_dur:.2f}ms")
+        final_proc = []
+        for name, v in merged_p.items():
+            final_proc.append({'name': name, 'dut': v['dut'], 'ref': v['ref'], 'diff': v['dut'] - v['ref']})
         
-        # Step 2: Add REF-only processes (not matched by DUT)
-        for ref_item in ref_p:
-            if ref_item['sql_name'] not in used_ref_sql_names:
-                sql_name = ref_item['sql_name']
-                dump_name = ref_item['dumpstate_name']
-                
-                # Choose display name: prefer dumpstate if sql is PID-XXX
-                if sql_name.startswith('PID-') and dump_name and not dump_name.startswith('PID-'):
-                    display_name = dump_name
-                else:
-                    display_name = sql_name
-                
-                matched_pairs.append({
-                    'name': display_name,
-                    'dut': 0.0,
-                    'ref': ref_item['dur_ms'],
-                    'diff': -ref_item['dur_ms']
-                })
-                # print(f"  [REF-ONLY] {display_name[:35]:35} REF={ref_item['dur_ms']:.2f}ms")
-        
-        # 3. Sort by Diff (descending) and take Top 10
-        top_proc = sorted(matched_pairs, key=lambda x: x['diff'], reverse=True)[:10]
-
-        # [Phần code vẽ bảng giữ nguyên...]
+        # Sort Diff -> Take Top 10
+        top_proc = sorted(final_proc, key=lambda x: x['diff'], reverse=True)[:10]
 
         # ---------------------------------------------------------
         # PREPARE DATA FOR RIGHT TABLE (THREAD)
