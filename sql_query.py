@@ -683,7 +683,6 @@ def process_cpu_data_process(df, pid_mapping: Dict[int, str] = None) -> List[Dic
     
     result = []
     for _, row in df.iterrows():
-<<<<<<< HEAD
         sql_name = str(row.get('proc_name', ''))  # Original name from SQL
         raw_pid = row.get('raw_pid')
         
@@ -704,27 +703,6 @@ def process_cpu_data_process(df, pid_mapping: Dict[int, str] = None) -> List[Dic
         # Final fallback: if dumpstate_name still None, use PID format
         if not dumpstate_name:
             dumpstate_name = f'PID-{int(raw_pid)}' if raw_pid is not None else 'Unknown'
-=======
-        proc_name = str(row.get('proc_name', ''))
-        raw_pid = row.get('raw_pid')
-        
-        # Chỉ resolve local mapping (DUT mapping cho DUT, REF mapping cho REF)
-        if proc_name.startswith("PID-") and pid_mapping and raw_pid is not None:
-            try:
-                pid_int = int(raw_pid)
-                if pid_int in pid_mapping:
-                    proc_name = pid_mapping[pid_int]
-                    print(f"  [Local Resolve] PID-{pid_int} -> {proc_name}")
-            except (ValueError, TypeError):
-                pass
-        
-        # Fallback
-        if not proc_name or proc_name.startswith("PID-"):
-            if raw_pid is not None:
-                proc_name = f'PID-{int(raw_pid)}'
-            else:
-                proc_name = 'Unknown'
->>>>>>> c9f9404bc02bbb3a27679a1c24127d54eab9de13
         
         result.append({
             'sql_name': sql_name,                    # Original SQL name
@@ -1404,8 +1382,4 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
         print("[DEBUG] No PID_Mapping available")
     
     metrics["App Package"] = app_pkg 
-<<<<<<< HEAD
     return metrics
-=======
-    return metrics
->>>>>>> c9f9404bc02bbb3a27679a1c24127d54eab9de13

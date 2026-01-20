@@ -201,7 +201,6 @@ def collect_bugreport_mappings(folder_path: str, extracted: bool = False) -> Dic
     return mappings
 
 
-<<<<<<< HEAD
 def _extract_timestamp_val(filename: str) -> int:
     """Helper: Trích xuất timestamp từ tên file để so sánh."""
     matches = re.findall(r'_(\d{6})', filename)
@@ -214,37 +213,19 @@ def _extract_timestamp_val(filename: str) -> int:
         return int(matches[-1])
     return 0
 
-=======
-# [File: dumpstate_parser.py]
->>>>>>> c9f9404bc02bbb3a27679a1c24127d54eab9de13
 
 def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[int, str]], 
                            occurrence: int = 1) -> Optional[Dict[int, str]]:
     """
     Xác định Bugreport mapping dựa trên APP GROUP và THỨ TỰ CYCLE.
-<<<<<<< HEAD
     [UPDATED LOGIC]
-=======
-    
-    Args:
-        log_filename: Tên file log
-        bugreport_mappings: Dict chứa toàn bộ mapping
-        occurrence: Thứ tự xuất hiện của file log này (1, 2, 3...)
-                    1, 2 -> Cycle 1
-                    3, 4 -> Cycle 2
-                    ...
->>>>>>> c9f9404bc02bbb3a27679a1c24127d54eab9de13
     """
     if not bugreport_mappings:
         return None
     
     log_name = Path(log_filename).name
     
-<<<<<<< HEAD
     # 1. Xác định App Group
-=======
-    # 1. Xác định App Group (VD: Calculator -> Group 3)
->>>>>>> c9f9404bc02bbb3a27679a1c24127d54eab9de13
     log_name_lower = log_name.lower()
     app_group = 0
     for group_num, app_list in APP_GROUPS.items():
@@ -256,21 +237,10 @@ def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[
             break
             
     if app_group == 0:
-<<<<<<< HEAD
         print(f"  [Mapping] Unknown group for {log_name}, skipping...")
         return None
 
     # 2. Lọc Bugreport thuộc Group này
-=======
-        # Fallback: Nếu không thuộc group nào, thử dùng timestamp matching (như cũ)
-        # Hoặc trả về None. Ở đây ta giữ fallback timestamp cho an toàn.
-        print(f"  [Mapping] Unknown group for {log_name}, fallback to timestamp logic...")
-        # (Bạn có thể copy lại logic timestamp cũ vào đây nếu muốn, hoặc return None)
-        return None
-
-    # 2. Lọc danh sách Bugreport thuộc Group này
-    # Ví dụ: Lấy tất cả bugreport có tên chứa "3part"
->>>>>>> c9f9404bc02bbb3a27679a1c24127d54eab9de13
     candidates = []
     for br_path in bugreport_mappings.keys():
         br_name = Path(br_path).name
@@ -281,7 +251,6 @@ def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[
         print(f"  [Mapping] No bugreports found for Group {app_group} (App: {log_name})")
         return None
         
-<<<<<<< HEAD
     # 3. Sắp xếp candidates theo tên (tức là theo thời gian)
     candidates.sort()
     
@@ -298,62 +267,8 @@ def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[
         # Fallback: Lấy cái cuối cùng
         selected_br = candidates[-1]
         print(f"  [Mapping Warning] Cycle {cycle_index+1} out of range. Using last: {Path(selected_br).name}")
-=======
-    # 3. Sắp xếp candidates theo tên (tương đương sắp xếp theo thời gian)
-    # A576...090000... < A576...100000...
-    candidates.sort()
-    
-    # 4. Tính toán Cycle Index từ occurrence
-    # Log 1 (Entry), Log 2 (Re-entry) -> Cycle 1 (Index 0)
-    # Log 3 (Entry), Log 4 (Re-entry) -> Cycle 2 (Index 1)
-    cycle_index = (occurrence - 1) // 2
-    
-    # 5. Chọn Bugreport tương ứng
-    selected_br = None
-    if cycle_index < len(candidates):
-        selected_br = candidates[cycle_index]
-        # print(f"  [Mapping] {log_name} (Occ {occurrence} -> Cyc {cycle_index+1}) matched with {Path(selected_br).name}")
-    else:
-        # Trường hợp Log nhiều hơn Bugreport (ví dụ chạy thêm cycle nhưng chưa lấy bugreport)
-        # Fallback: Lấy cái cuối cùng
-        selected_br = candidates[-1]
-        print(f"  [Mapping Warning] Cycle {cycle_index+1} out of range (Found {len(candidates)} BRs). Using last: {Path(selected_br).name}")
->>>>>>> c9f9404bc02bbb3a27679a1c24127d54eab9de13
 
     if selected_br:
         return bugreport_mappings[selected_br]
         
-<<<<<<< HEAD
     return None
-=======
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Test function
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    # Test với sample data
-    sample_content = """
-Total PSS by process:
-    314,911K: com.android.systemui (pid 2009)                             (   26,367K in swap)
-    276,444K: system (pid 1335)                                           (   23,311K in swap)
-    219,752K: com.sec.android.app.launcher (pid 2806 / activities)        (   17,672K in swap)
-    182,059K: surfaceflinger (pid 1006)                                   (   36,180K in swap)
-     73,464K: com.samsung.android.honeyboard (pid 4350)                   (    6,980K in swap)
-
-Total PSS by OOM adjustment:
-    649,176K: Native                                                      (  261,292K in swap)
-    """
-    
-    result = parse_pid_mapping(sample_content)
-    print("Parsed PID Mapping:")
-    for pid, name in result.items():
-        print(f"  PID {pid} -> {name}")
-    
-    # Test get_app_group
-    test_apps = ['camera', 'hello', 'helloworld', 'calllog', 'myfiles', 'settings']
-    print("\nApp Group Mapping:")
-    for app in test_apps:
-        print(f"  {app} -> Group {get_app_group(app)}")
->>>>>>> c9f9404bc02bbb3a27679a1c24127d54eab9de13
