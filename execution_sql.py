@@ -929,32 +929,43 @@ def create_sheet(
             
             ref_dur = 0.0
             display_name = sql_name  # Default display name
+            matched = False  # Track if a match was found
             
             # Priority 1: Match by SQL name (exact match)
             if sql_name in ref_by_sql:
                 ref_dur = ref_by_sql[sql_name]['dur_ms']
                 used_ref_sql_names.add(sql_name)
+                matched = True
                 
             # Priority 2: Match by dumpstate name (when SQL didn't match)
+            # Only attempt if BOTH DUT and REF have dumpstate_name (have bugreport.zip)
             elif dump_name and dump_name in ref_by_dump:
                 ref_item = ref_by_dump[dump_name]
                 ref_dur = ref_item['dur_ms']
                 used_ref_sql_names.add(ref_item['sql_name'])
                 display_name = dump_name  # Use dumpstate name for display
+                matched = True
                 
-            # No match: REF = 0
+            # No match found
             else:
                 if sql_name.startswith('PID-') and dump_name and not dump_name.startswith('PID-'):
                     display_name = dump_name
+            
+            # Calculate diff:
+            # - If matched: diff = dut_dur - ref_dur (normal)
+            # - If not matched (sql_name not found in REF): diff = 0 to exclude from top table
+            diff_value = dut_dur - ref_dur if matched else 0.0
             
             matched_pairs.append({
                 'name': display_name,
                 'dut': dut_dur,
                 'ref': ref_dur,
-                'diff': dut_dur - ref_dur
+                'diff': diff_value
             })
         
         # Step 2: Add REF-only processes (not matched by DUT)
+        # These processes exist in REF but not in DUT
+        # Since there's no match, diff = 0 to exclude from top table
         for ref_item in ref_p:
             if ref_item['sql_name'] not in used_ref_sql_names:
                 sql_name = ref_item['sql_name']
@@ -965,11 +976,12 @@ def create_sheet(
                 else:
                     display_name = sql_name
                 
+                # No match: diff = 0 to exclude from top table
                 matched_pairs.append({
                     'name': display_name,
                     'dut': 0.0,
                     'ref': ref_item['dur_ms'],
-                    'diff': -ref_item['dur_ms']
+                    'diff': 0.0  # Changed: exclude unmatched from top table
                 })
         
         # Sort by Diff (descending) and take Top 10
