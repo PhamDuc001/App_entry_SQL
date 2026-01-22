@@ -819,13 +819,17 @@ def process_multiple_slices_data(df) -> Dict[str, List[int]]:
 # -------------------------------------------------------------------
 # ABNORMAL PROCESSES 
 # -------------------------------------------------------------------
-def get_abnormal_processes(tp: TraceProcessor, threshold_time: int, exclude_pid: int, target_slices: List[str] = None):
+def get_abnormal_processes(tp: TraceProcessor, start_time: int, end_time: int, exclude_pid: int, target_slices: List[str] = None):
     """
-    Lấy danh sách các process khởi chạy (bindApplication) trước khi App chính hoàn tất launch.
+    Lấy danh sách các process khởi chạy (bindApplication) trong khoảng thời gian [start_time, end_time].
     Loại trừ PID của App chính.
     """
-    if not threshold_time or not exclude_pid:
+    # Validate inputs
+    if not end_time or not exclude_pid:
         return None
+    
+    if start_time is None:
+        start_time = 0
 
     if target_slices is None:
         target_slices = ['bindApplication']
@@ -847,7 +851,8 @@ def get_abnormal_processes(tp: TraceProcessor, threshold_time: int, exclude_pid:
     JOIN process USING (upid)
     WHERE 
         slice.name IN ({slice_names_str})
-        AND slice.ts < {threshold_time}
+        AND slice.ts >= {start_time} 
+        AND slice.ts <= {end_time}   
         AND process.pid != {exclude_pid}
     ORDER BY slice.ts ASC;
     """
@@ -1342,9 +1347,10 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
     }
 
     # [Abnormal process]
-    check_threshold = end_ts if end_ts else 0
+    abnormal_start = touch_down_ts if touch_down_ts else 0
+    abnormal_end = end_ts if end_ts else 0
     target_abnormal_slices = ['bindApplication'] 
-    abnormal_df = get_abnormal_processes(tp, check_threshold, app_pid, target_abnormal_slices)
+    abnormal_df = get_abnormal_processes(tp, abnormal_start, abnormal_end, app_pid, target_abnormal_slices)
     metrics["Abnormal_Process_Data"] = process_abnormal_data(abnormal_df)
 
     # [Background Process States]
@@ -1355,3 +1361,6 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
     metrics["PID_Mapping"] = pid_mapping if pid_mapping else {}
     metrics["App Package"] = app_pkg 
     return metrics
+
+
+    

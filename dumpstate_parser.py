@@ -266,7 +266,7 @@ def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[
     else:
         # Fallback: Lấy cái cuối cùng
         selected_br = candidates[-1]
-        print(f"  [Mapping Warning] Cycle {cycle_index+1} out of range. Using last: {Path(selected_br).name}")
+        # print(f"  [Mapping Warning] Cycle {cycle_index+1} out of range. Using last: {Path(selected_br).name}")
 
     if selected_br:
         return bugreport_mappings[selected_br]
