@@ -663,17 +663,26 @@ def create_sheet(
         col_idx += 1
         
         # --- DIFF COLUMN ---
-        if dut_avg > 0 and ref_avg > 0:
-            diff_val = dut_avg - ref_avg
-            if diff_val > 10:
-                fmt_diff = fmt_diff_slow  
-            elif diff_val < -10:
-                fmt_diff = fmt_diff_fast  
-            else:
-                fmt_diff = fmt_diff_normal 
-            ws.write(row_idx, col_idx, diff_val, fmt_diff)
+        # if dut_avg > 0 and ref_avg > 0:
+        #     diff_val = dut_avg - ref_avg
+        #     if diff_val > 10:
+        #         fmt_diff = fmt_diff_slow  
+        #     elif diff_val < -10:
+        #         fmt_diff = fmt_diff_fast  
+        #     else:
+        #         fmt_diff = fmt_diff_normal 
+        #     ws.write(row_idx, col_idx, diff_val, fmt_diff)
+        # else:
+        #     ws.write(row_idx, col_idx, "", fmt_text)
+
+        diff_val = dut_avg - ref_avg
+        if diff_val > 10:
+            fmt_diff = fmt_diff_slow  
+        elif diff_val < -10:
+            fmt_diff = fmt_diff_fast  
         else:
-            ws.write(row_idx, col_idx, "", fmt_text)
+            fmt_diff = fmt_diff_normal 
+        ws.write(row_idx, col_idx, diff_val, fmt_diff)
 
         row_idx += 1
     

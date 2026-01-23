@@ -165,13 +165,16 @@ def find_dumpstate_content(path: str, extracted: bool = False) -> Optional[str]:
 
 
 def get_bugreport_group_from_name(filename: str) -> int:
-    """Xác định group number từ tên file bugreport (dựa vào 'Xpart')."""
-    match = re.search(r'(\d)part', filename.lower())
+    """Xác định group number từ tên file bugreport (dựa vào 'Xpart' hoặc 'partX')."""
+    # Pattern để bắt cả: 6part, part6, 6Part, Part6
+    match = re.search(r'(\d)part|part(\d)', filename.lower())
     if match:
-        group = int(match.group(1))
+        # Lấy group từ match group 1 hoặc group 2
+        group = int(match.group(1) if match.group(1) else match.group(2))
         if 1 <= group <= 6:
             return group
     return 0
+
 
 
 def collect_bugreport_mappings(folder_path: str, extracted: bool = False) -> Dict[str, Dict[int, str]]:

@@ -679,7 +679,7 @@ class DevicePerformanceAnalyzer:
                         if app not in target_apps:
                             target_apps.append(app)
                 
-                print(f"Target apps for {part_name}: {target_apps}")
+                # print(f"Target apps for {part_name}: {target_apps}")
                 
                 # Analyze each app from the dumpstate file
                 for target_app in target_apps:
@@ -687,7 +687,7 @@ class DevicePerformanceAnalyzer:
                         app_info = app_analyzer.analyze_file(dump_path, target_app)
                         app_info.folder_name = zip_file.stem  # Use zip file name as folder identifier
                         app_start_kill_data.append(app_info)
-                        print(f"  {target_app}: start={app_info.start_count}, kill={app_info.kill_count}")
+                        # print(f"  {target_app}: start={app_info.start_count}, kill={app_info.kill_count}")
                     except Exception as e:
                         print(f"Error analyzing {target_app} in {zip_file.name}: {e}")
         
@@ -1471,13 +1471,13 @@ class DevicePerformanceAnalyzer:
                 # First, check if file contains Dexopt state at all
                 file_content = f.read()
                 if "Dexopt state:" not in file_content:
-                    print(f"Warning: Dexopt state section not found in {file_path}")
+                    # print(f"Warning: Dexopt state section not found in {file_path}")
                     return compiler_data
                 
                 # Find the Dexopt state section
                 dexopt_start = file_content.find("Dexopt state:")
                 if dexopt_start == -1:
-                    print(f"Warning: Dexopt state section not found in {file_path}")
+                    # print(f"Warning: Dexopt state section not found in {file_path}")
                     return compiler_data
                 
                 # Look for Compiler stats section to bound the Dexopt section
