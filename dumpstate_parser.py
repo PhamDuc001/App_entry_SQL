@@ -248,23 +248,27 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
     # result[trace_path] = pid_mapping
     result: Dict[str, Dict[int, str]] = {}
     
+    # Track max group seen to detect cycle wrap-around
+    max_group_seen = 0
+    
     for item in items:
         if item['type'] == 'trace':
             group = item['group']
             if group == 0:
-                # Unknown group - skip
                 continue
             
-            # Check if this is a new cycle (same group already has pending traces)
-            if pending_traces[group]:
-                # Cycle boundary detected!
-                # Mark all pending traces of this group as "no bugreport"
-                for trace_path in pending_traces[group]:
-                    result[trace_path] = {}  # Empty dict = no mapping
-                pending_traces[group] = []
+            # Detect cycle wrap-around: group went back to smaller number
+            if group < max_group_seen:
+                # New cycle! Mark all remaining pending as no mapping
+                for g in range(1, 7):
+                    for trace_path in pending_traces[g]:
+                        result[trace_path] = {}  # Empty dict = no mapping
+                    pending_traces[g] = []
+                max_group_seen = 0  # Reset for new cycle
             
-            # Add to pending
+            # Add to pending for this group
             pending_traces[group].append(item['path'])
+            max_group_seen = max(max_group_seen, group)
             
         elif item['type'] == 'bugreport':
             group = item['group']
@@ -281,8 +285,9 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
             for trace_path in pending_traces[group]:
                 result[trace_path] = pid_mapping
             
-            # Clear pending
+            # Clear pending for this group
             pending_traces[group] = []
+            max_group_seen = max(max_group_seen, group)
     
     # 4. Traces còn lại trong pending = no bugreport
     for group in range(1, 7):
