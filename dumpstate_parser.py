@@ -166,15 +166,135 @@ def find_dumpstate_content(path: str, extracted: bool = False) -> Optional[str]:
 
 def get_bugreport_group_from_name(filename: str) -> int:
     """Xác định group number từ tên file bugreport (dựa vào 'Xpart' hoặc 'partX')."""
-    # Pattern để bắt cả: 6part, part6, 6Part, Part6
-    match = re.search(r'(\d)part|part(\d)', filename.lower())
+    # Match cả "2part" và "part2"
+    match = re.search(r'(\d)part', filename.lower())
+    if not match:
+        match = re.search(r'part(\d)', filename.lower())
     if match:
-        # Lấy group từ match group 1 hoặc group 2
-        group = int(match.group(1) if match.group(1) else match.group(2))
+        group = int(match.group(1))
         if 1 <= group <= 6:
             return group
     return 0
 
+
+def get_app_name_from_log(filename: str) -> str:
+    """Extract app name từ log filename (phần cuối trước .log)."""
+    name = Path(filename).stem.lower()
+    # Format: A266_260108_164459_camera -> lấy phần cuối
+    parts = name.split('_')
+    if parts:
+        return parts[-1]
+    return ""
+
+
+def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> Dict[str, Dict[int, str]]:
+    """
+    Build mapping {trace_path: pid_mapping} dựa trên sorted filename approach.
+    
+    Logic:
+    1. List tất cả .log files và bugreport folders/zips
+    2. Sort theo tên (chronological order)
+    3. Iterate và assign bugreport cho traces dựa trên group
+    
+    Returns:
+        Dict[trace_path, {pid: process_name}] - mapping cho mỗi trace file
+    """
+    folder = Path(folder_path)
+    if not folder.exists():
+        return {}
+    
+    # 1. Thu thập tất cả items (logs + bugreports)
+    items = []
+    
+    for item in folder.iterdir():
+        name_lower = item.name.lower()
+        
+        if item.is_file() and name_lower.endswith('.log'):
+            # Trace file
+            app_name = get_app_name_from_log(item.name)
+            app_group = get_app_group(app_name)
+            items.append({
+                'path': str(item),
+                'name': item.name,
+                'type': 'trace',
+                'group': app_group,
+                'app': app_name
+            })
+            
+        elif 'bugreport' in name_lower:
+            # Bugreport - có thể là folder (extracted) hoặc .zip
+            is_valid = False
+            if extracted and item.is_dir():
+                is_valid = True
+            elif not extracted and item.is_file() and name_lower.endswith('.zip'):
+                is_valid = True
+            
+            if is_valid:
+                br_group = get_bugreport_group_from_name(item.name)
+                items.append({
+                    'path': str(item),
+                    'name': item.name,
+                    'type': 'bugreport',
+                    'group': br_group
+                })
+    
+    # 2. Sort theo tên (chronological order based on timestamp in name)
+    items.sort(key=lambda x: x['name'])
+    
+    # 3. Iterate và assign
+    # pending_traces[group] = list of trace paths waiting for bugreport
+    pending_traces: Dict[int, List[str]] = {i: [] for i in range(1, 7)}
+    
+    # result[trace_path] = pid_mapping
+    result: Dict[str, Dict[int, str]] = {}
+    
+    # Track max group seen to detect cycle wrap-around
+    max_group_seen = 0
+    
+    for item in items:
+        if item['type'] == 'trace':
+            group = item['group']
+            if group == 0:
+                continue
+            
+            # Detect cycle wrap-around: group went back to smaller number
+            if group < max_group_seen:
+                # New cycle! Mark all remaining pending as no mapping
+                for g in range(1, 7):
+                    for trace_path in pending_traces[g]:
+                        result[trace_path] = {}  # Empty dict = no mapping
+                    pending_traces[g] = []
+                max_group_seen = 0  # Reset for new cycle
+            
+            # Add to pending for this group
+            pending_traces[group].append(item['path'])
+            max_group_seen = max(max_group_seen, group)
+            
+        elif item['type'] == 'bugreport':
+            group = item['group']
+            if group == 0:
+                continue
+            
+            # Parse PID mapping từ bugreport
+            content = find_dumpstate_content(item['path'], extracted=extracted)
+            pid_mapping = {}
+            if content:
+                pid_mapping = parse_pid_mapping(content)
+            
+            # Assign mapping cho tất cả pending traces của group này
+            for trace_path in pending_traces[group]:
+                result[trace_path] = pid_mapping
+            
+            # Clear pending for this group
+            pending_traces[group] = []
+            max_group_seen = max(max_group_seen, group)
+    
+    # 4. Traces còn lại trong pending = no bugreport
+    for group in range(1, 7):
+        for trace_path in pending_traces[group]:
+            result[trace_path] = {}  # Empty dict = no mapping
+    
+    return result
 
 
 def collect_bugreport_mappings(folder_path: str, extracted: bool = False) -> Dict[str, Dict[int, str]]:
@@ -269,7 +389,7 @@ def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[
     else:
         # Fallback: Lấy cái cuối cùng
         selected_br = candidates[-1]
-        # print(f"  [Mapping Warning] Cycle {cycle_index+1} out of range. Using last: {Path(selected_br).name}")
+        print(f"  [Mapping Warning] Cycle {cycle_index+1} out of range. Using last: {Path(selected_br).name}")
 
     if selected_br:
         return bugreport_mappings[selected_br]

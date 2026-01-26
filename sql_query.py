@@ -614,6 +614,7 @@ def process_loadapk_data(df) -> List[Dict[str, Any]]:
 # ==============================================================
 # --- 1. Query cho Process (Group by Process Name) ---
 def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int, cpu_cores: List[int]):
+    # print(f"StartTime =  {start_time}, Duration = {dur_time}")
     """
     Query top CPU usage by process. 
     [UPDATED] Trả về thêm cột 'raw_pid' để Python có thể map lại tên nếu cần.

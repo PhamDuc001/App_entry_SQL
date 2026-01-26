@@ -44,6 +44,7 @@ from sql_query import *
 from atracetosystrace import convert_trace
 from multiprocessing import Pool, cpu_count
 from dumpstate_parser import (
+    build_trace_bugreport_mapping,
     collect_bugreport_mappings, 
     get_bugreport_for_log, 
     get_app_group,
@@ -64,9 +65,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -282,26 +283,28 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
                        target_apps: List[str] = None, extracted: bool = False) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
     """
     Xử lý tất cả traces.
-    [UPDATED] Truyền 'occurrence' để map bugreport theo thứ tự Cycle.
+    [UPDATED] Sử dụng sorted filename approach để match trace với bugreport.
     """
     trace_files = collect_trace_files(folder_path)
     app_groups = group_traces_by_app(trace_files, target_apps)
     
-    print(f"\n[{label}] Collecting bugreport mappings (extracted={extracted})...")
-    bugreport_mappings = collect_bugreport_mappings(folder_path, extracted)
-    print(f"[{label}] Found {len(bugreport_mappings)} bugreport(s) with PID mappings")
+    # [NEW] Build mapping using sorted filename approach
+    print(f"\n[{label}] Building trace-bugreport mapping (extracted={extracted})...")
+    trace_mapping = build_trace_bugreport_mapping(folder_path, extracted)
     
-    # Không cần all_files_sorted nữa
+    # Count how many traces have valid mappings
+    valid_count = sum(1 for m in trace_mapping.values() if m)
+    print(f"[{label}] Mapped {valid_count}/{len(trace_mapping)} traces to bugreports")
     
     tasks = []
     for app_name, file_list in app_groups.items():
         for file_path, occurrence in file_list:
-            # [LOGIC MỚI] Truyền occurrence vào để xác định Cycle
-            pid_mapping = get_bugreport_for_log(
-                file_path, 
-                bugreport_mappings, 
-                occurrence=occurrence # <--- QUAN TRỌNG
-            )
+            # [NEW] Lấy pid_mapping từ trace_mapping đã build
+            pid_mapping = trace_mapping.get(file_path, None)
+            
+            # Convert empty dict to None for consistency
+            if pid_mapping is not None and len(pid_mapping) == 0:
+                pid_mapping = None
             
             tasks.append((file_path, occurrence, app_name, pid_mapping))
     
@@ -331,6 +334,7 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
         }
     
     return cleaned_results
+
 
 
 # ---------------------------------------------------------------------------
