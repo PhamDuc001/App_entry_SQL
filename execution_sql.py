@@ -667,25 +667,22 @@ def create_sheet(
         col_idx += 1
         
         # --- DIFF COLUMN ---
-        # if dut_avg > 0 and ref_avg > 0:
-        #     diff_val = dut_avg - ref_avg
-        #     if diff_val > 10:
-        #         fmt_diff = fmt_diff_slow  
-        #     elif diff_val < -10:
-        #         fmt_diff = fmt_diff_fast  
-        #     else:
-        #         fmt_diff = fmt_diff_normal 
-        #     ws.write(row_idx, col_idx, diff_val, fmt_diff)
-        # else:
-        #     ws.write(row_idx, col_idx, "", fmt_text)
-
-        diff_val = dut_avg - ref_avg
-        if diff_val > 10:
-            fmt_diff = fmt_diff_slow  
-        elif diff_val < -10:
-            fmt_diff = fmt_diff_fast  
+        if metric_key == "Uninterruptible Sleep":
+            if diff_val > 30:  # Ngưỡng 30ms cho Uninterruptible Sleep
+                fmt_diff = fmt_diff_slow      
+            elif diff_val < -30:
+                fmt_diff = fmt_diff_fast      
+            else:
+                fmt_diff = fmt_diff_normal     
         else:
-            fmt_diff = fmt_diff_normal 
+            # Các metric khác giữ nguyên ngưỡng 10ms
+            if diff_val > 10:
+                fmt_diff = fmt_diff_slow      
+            elif diff_val < -10:
+                fmt_diff = fmt_diff_fast      
+            else:
+                fmt_diff = fmt_diff_normal     
+
         ws.write(row_idx, col_idx, diff_val, fmt_diff)
 
         row_idx += 1
@@ -960,7 +957,7 @@ def create_sheet(
             match_found = False
             
             # --- CHECK 1: Match chính xác theo SQL Name ---
-            if dut_sql in ref_by_sql:
+            if not dut_sql.startswith("PID-") and dut_sql in ref_by_sql:
                 ref_item = ref_by_sql[dut_sql]
                 ref_val = ref_item['dur_ms']
                 match_found = True
