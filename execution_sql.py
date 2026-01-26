@@ -68,6 +68,7 @@ else:
 RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
 # RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+#===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
 APP_MAPPING = {
@@ -335,6 +336,80 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
     return cleaned_results
 
 
+
+# ---------------------------------------------------------------------------
+# Excel Creation - Helper Functions
+# ---------------------------------------------------------------------------
+
+def select_common_end_ts_type(dut_metrics: Dict[str, Any], ref_metrics: Dict[str, Any]) -> Optional[str]:
+    """
+    Chọn end_ts type mà CẢ DUT và REF đều có.
+    Ưu tiên: Chọn type có giá trị LỚN NHẤT (execution time dài nhất).
+    
+    Args:
+        dut_metrics: Metrics từ DUT cycle
+        ref_metrics: Metrics từ REF cycle
+        
+    Returns:
+        Common end_ts type name hoặc None nếu không có common type
+    """
+    dut_variants = dut_metrics.get("end_ts_variants", {})
+    ref_variants = ref_metrics.get("end_ts_variants", {})
+    
+    # Tìm các types mà CẢ HAI đều có (value > 0)
+    dut_types = {k for k, v in dut_variants.items() if v and v > 0}
+    ref_types = {k for k, v in ref_variants.items() if v and v > 0}
+    common_types = dut_types & ref_types
+    
+    if not common_types:
+        return None
+    
+    # Chọn type có giá trị LỚN NHẤT (average của DUT và REF)
+    best_type = None
+    best_value = 0
+    
+    for etype in common_types:
+        avg_value = (dut_variants.get(etype, 0) + ref_variants.get(etype, 0)) / 2
+        if avg_value > best_value:
+            best_value = avg_value
+            best_type = etype
+    
+    return best_type
+
+
+def get_metrics_for_end_ts_type(metrics: Dict[str, Any], end_ts_type: str) -> Dict[str, Any]:
+    """
+    Lấy data tương ứng với end_ts_type từ metrics.
+    Nếu không có data_by_end_ts, fallback về metrics root.
+    
+    Args:
+        metrics: Full metrics dict từ analyze_trace
+        end_ts_type: Type cần lấy ("activityIdle", "animating", "startPreviewRequest")
+        
+    Returns:
+        Dict chứa data cho end_ts_type đó, hoặc metrics root nếu không có
+    """
+    data_by_end_ts = metrics.get("data_by_end_ts", {})
+    
+    if end_ts_type and end_ts_type in data_by_end_ts:
+        # Merge: base metrics + data từ end_ts_type
+        result = metrics.copy()
+        type_data = data_by_end_ts[end_ts_type]
+        
+        # Override các fields phụ thuộc end_ts
+        for key in ["Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
+                    "Block_IO_Data", "LoadApkAsset_Data", "CPU_Process_Data",
+                    "CPU_Thread_Data", "Binder_Transaction_Data",
+                    "Abnormal_Process_Data", "Background_Process_States", "App Execution Time"]:
+            if key in type_data:
+                result[key] = type_data[key]
+        
+        return result
+    
+    # Fallback: return metrics as-is (backward compatible)
+    return metrics
+
+
 # ---------------------------------------------------------------------------
 # Excel Creation
 # ---------------------------------------------------------------------------
@@ -525,8 +600,58 @@ def create_sheet(
     num_ref_cycles = len(ref_cycles)
     max_cycles = max(num_dut_cycles, num_ref_cycles)
     
+    # =========================================================================
+    # [NEW] PRE-PROCESS: Chọn common end_ts type cho mỗi cycle pair
+    # Điều này đảm bảo DUT và REF được so sánh với cùng time window
+    # =========================================================================
+    adjusted_dut_cycles = []
+    adjusted_ref_cycles = []
+    end_ts_types_used = []  # Track which type was used for each cycle
+    
+    for i in range(max_cycles):
+        dut_cycle = dut_cycles[i] if i < num_dut_cycles else None
+        ref_cycle = ref_cycles[i] if i < num_ref_cycles else None
+        
+        if dut_cycle and ref_cycle:
+            # Có cả DUT và REF → tìm common end_ts type
+            common_type = select_common_end_ts_type(dut_cycle, ref_cycle)
+            
+            if common_type:
+                # Lấy data cho common type
+                adj_dut = get_metrics_for_end_ts_type(dut_cycle, common_type)
+                adj_ref = get_metrics_for_end_ts_type(ref_cycle, common_type)
+                end_ts_types_used.append(common_type)
+            else:
+                # Không có common type → dùng data gốc, sẽ có warning
+                adj_dut = dut_cycle
+                adj_ref = ref_cycle
+                end_ts_types_used.append("mismatch")
+        elif dut_cycle:
+            adj_dut = dut_cycle
+            adj_ref = None
+            end_ts_types_used.append("dut_only")
+        elif ref_cycle:
+            adj_dut = None
+            adj_ref = ref_cycle
+            end_ts_types_used.append("ref_only")
+        else:
+            adj_dut = None
+            adj_ref = None
+            end_ts_types_used.append(None)
+        
+        adjusted_dut_cycles.append(adj_dut)
+        adjusted_ref_cycles.append(adj_ref)
+    
+    # Replace cycles với adjusted versions
+    dut_cycles = [c for c in adjusted_dut_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_dut_cycles if c is not None]))
+    ref_cycles = [c for c in adjusted_ref_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_ref_cycles if c is not None]))
+    
+    # Rebuild lists to maintain original length
+    dut_cycles = adjusted_dut_cycles
+    ref_cycles = adjusted_ref_cycles
+
     # --- CHECK GLOBAL STATE (ALL COLD / ALL WARM) ---
-    all_cycles_data = dut_cycles + ref_cycles
+    all_cycles_data = [c for c in dut_cycles + ref_cycles if c is not None]
     has_cold = any(c.get("Launch Type") == "Cold" for c in all_cycles_data)
     has_warm = any(c.get("Launch Type") == "Warm" for c in all_cycles_data)
 
@@ -599,7 +724,7 @@ def create_sheet(
         col_idx = 1
         dut_values = []
         for i in range(max_cycles):
-            if i < len(dut_cycles):
+            if i < len(dut_cycles) and dut_cycles[i] is not None:
                 cycle_data = dut_cycles[i]
                 c_type = cycle_data.get("Launch Type")
                 
@@ -633,7 +758,7 @@ def create_sheet(
         # --- WRITE REF DATA (Masking Logic) ---
         ref_values = []
         for i in range(max_cycles):
-            if i < len(ref_cycles):
+            if i < len(ref_cycles) and ref_cycles[i] is not None:
                 cycle_data = ref_cycles[i]
                 c_type = cycle_data.get("Launch Type")
                 
@@ -665,17 +790,24 @@ def create_sheet(
         col_idx += 1
         
         # --- DIFF COLUMN ---
-        if dut_avg > 0 and ref_avg > 0:
-            diff_val = dut_avg - ref_avg
-            if diff_val > 10:
-                fmt_diff = fmt_diff_slow  
-            elif diff_val < -10:
-                fmt_diff = fmt_diff_fast  
+        diff_val = dut_avg - ref_avg
+        if metric_key == "Uninterruptible Sleep":
+            if diff_val > 30:  # Ngưỡng 30ms cho Uninterruptible Sleep
+                fmt_diff = fmt_diff_slow      
+            elif diff_val < -30:
+                fmt_diff = fmt_diff_fast      
             else:
-                fmt_diff = fmt_diff_normal 
-            ws.write(row_idx, col_idx, diff_val, fmt_diff)
+                fmt_diff = fmt_diff_normal     
         else:
-            ws.write(row_idx, col_idx, "", fmt_text)
+            # Các metric khác giữ nguyên ngưỡng 10ms
+            if diff_val > 10:
+                fmt_diff = fmt_diff_slow      
+            elif diff_val < -10:
+                fmt_diff = fmt_diff_fast      
+            else:
+                fmt_diff = fmt_diff_normal     
+
+        ws.write(row_idx, col_idx, diff_val, fmt_diff)
 
         row_idx += 1
     
@@ -914,8 +1046,6 @@ def create_sheet(
         dut_p = all_dut_proc[cycle_idx] if cycle_idx < len(all_dut_proc) else []
         ref_p = all_ref_proc[cycle_idx] if cycle_idx < len(all_ref_proc) else []
         
-        # ... (Code phía trên giữ nguyên) ...
-
         # 1. Tạo Lookup Map cho REF
         ref_by_sql = {}   # Tra cứu nhanh bằng tên SQL
         ref_by_dump = {}  # Tra cứu nhanh bằng tên Dumpstate
@@ -926,7 +1056,7 @@ def create_sheet(
             
             # Add to SQL Map (Cộng dồn nếu trùng tên do phân mảnh)
             if s_name not in ref_by_sql:
-                ref_by_sql[s_name] = item.copy() 
+                ref_by_sql[s_name] = item.copy()
             else:
                 ref_by_sql[s_name]['dur_ms'] += item['dur_ms']
 
@@ -938,7 +1068,7 @@ def create_sheet(
                     ref_by_dump[d_name]['dur_ms'] += item['dur_ms']
         
         matched_results = []
-        # [REMOVED] used_ref_sql_names = set() -> Không cần dùng nữa vì không duyệt ngược REF
+        used_ref_sql_names = set() # Đánh dấu các REF đã được match để không in lại ở phần REF-only
         
         # 2. Duyệt DUT và tìm REF tương ứng
         for dut_item in dut_p:
@@ -951,7 +1081,7 @@ def create_sheet(
             match_found = False
             
             # --- CHECK 1: Match chính xác theo SQL Name ---
-            if dut_sql in ref_by_sql:
+            if not dut_sql.startswith("PID-") and dut_sql in ref_by_sql:
                 ref_item = ref_by_sql[dut_sql]
                 ref_val = ref_item['dur_ms']
                 match_found = True
@@ -997,8 +1127,6 @@ def create_sheet(
 
         # 3. Sort & Select Top 10
         top_proc = sorted(matched_results, key=lambda x: x['diff'], reverse=True)[:10]
-
-
 
         # ---------------------------------------------------------
         # PREPARE DATA FOR RIGHT TABLE (THREAD)

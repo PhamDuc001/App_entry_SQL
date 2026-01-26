@@ -614,6 +614,7 @@ def process_loadapk_data(df) -> List[Dict[str, Any]]:
 # ==============================================================
 # --- 1. Query cho Process (Group by Process Name) ---
 def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int, cpu_cores: List[int]):
+    # print(f"StartTime =  {start_time}, Duration = {dur_time}")
     """
     Query top CPU usage by process. 
     [UPDATED] Trả về thêm cột 'raw_pid' để Python có thể map lại tên nếu cần.
@@ -851,8 +852,8 @@ def get_abnormal_processes(tp: TraceProcessor, start_time: int, end_time: int, e
     JOIN process USING (upid)
     WHERE 
         slice.name IN ({slice_names_str})
-        AND slice.ts >= {start_time} -- Điều kiện thời gian bắt đầu
-        AND slice.ts <= {end_time}   -- Điều kiện thời gian kết thúc
+        AND slice.ts >= {start_time} 
+        AND slice.ts <= {end_time}   
         AND process.pid != {exclude_pid}
     ORDER BY slice.ts ASC;
     """
@@ -1013,6 +1014,83 @@ def get_background_process_states(tp: TraceProcessor, start_ts: int, end_ts: int
 # -------------------------------------------------------------------
 # 5. MAIN ANALYSIS LOGIC
 # -------------------------------------------------------------------
+
+
+def _query_end_ts_dependent_data(
+    tp: TraceProcessor,
+    touch_down_ts: int,
+    end_ts: int,
+    app_pid: int,
+    app_tid: int,
+    pid_mapping: Dict[int, str] = None
+) -> Dict[str, Any]:
+    """
+    Query tất cả data phụ thuộc vào end_ts.
+    Helper function được gọi cho mỗi end_ts type (activityIdle, animating, startPreviewRequest).
+    
+    Returns:
+        Dict containing: Thread State, Block I/O, CPU, Binder, Abnormal, Background data
+    """
+    data = {}
+    
+    dur_time = (end_ts - touch_down_ts) if end_ts and touch_down_ts else 0
+    
+    # [Thread State]
+    state_summary = get_thread_state_summary(tp, app_tid, touch_down_ts, dur_time)
+    data["Running"] = state_summary.get("Running", 0.0)
+    data["Runnable"] = state_summary.get("R", 0.0) + state_summary.get("R+", 0.0)
+    data["Uninterruptible Sleep"] = state_summary.get("D", 0.0)
+    data["Sleeping"] = state_summary.get("S", 0.0)
+    
+    # [Block I/O]
+    safe_start_time = touch_down_ts if touch_down_ts else 0
+    safe_end_time = end_ts if end_ts else (safe_start_time + 10_000_000_000)
+    block_io_df = top_block_IO(tp, app_pid, safe_start_time, safe_end_time)
+    data["Block_IO_Data"] = process_block_io_data(block_io_df)
+    
+    # [LoadApkAssets]
+    load_apk_pids = get_pid_list(tp)
+    if not load_apk_pids:
+        load_apk_pids = [app_pid]
+    if app_pid not in load_apk_pids:
+        load_apk_pids.append(app_pid)
+    loadapk_df = get_loadApkAsset(tp, load_apk_pids, touch_down_ts, end_ts if end_ts else 0)
+    data["LoadApkAsset_Data"] = process_loadapk_data(loadapk_df)
+    
+    # [CPU Usage]
+    cpu_cores = [0, 1, 2, 3, 4, 5, 6, 7]
+    
+    # 1. Get Top Process
+    cpu_proc_df = get_top_cpu_usage_process(tp, touch_down_ts, dur_time, cpu_cores)
+    data["CPU_Process_Data"] = process_cpu_data_process(cpu_proc_df, pid_mapping)
+    
+    # 2. Get Top Thread
+    cpu_thread_df = get_top_cpu_usage_thread(tp, touch_down_ts, dur_time, cpu_cores)
+    data["CPU_Thread_Data"] = process_cpu_data_thread(cpu_thread_df)
+    
+    # [Binder]
+    binder_count, binder_dur = get_binder_transaction(tp, app_tid, end_ts if end_ts else 0)
+    data["Binder_Transaction_Data"] = {
+        'count': binder_count if binder_count is not None else 0,
+        'duration_ms': binder_dur if binder_dur is not None else 0.0
+    }
+    
+    # [Abnormal process]
+    abnormal_start = touch_down_ts if touch_down_ts else 0
+    abnormal_end = end_ts if end_ts else 0
+    target_abnormal_slices = ['bindApplication']
+    abnormal_df = get_abnormal_processes(tp, abnormal_start, abnormal_end, app_pid, target_abnormal_slices)
+    data["Abnormal_Process_Data"] = process_abnormal_data(abnormal_df)
+    
+    # [Background Process States]
+    bg_start_ts = touch_down_ts if touch_down_ts else 0
+    bg_end_ts = end_ts if end_ts else 0
+    data["Background_Process_States"] = get_background_process_states(tp, bg_start_ts, bg_end_ts)
+    
+    # [App Execution Time for this end_ts]
+    data["App Execution Time"] = to_ms(end_ts - touch_down_ts) if end_ts and touch_down_ts else 0.0
+    
+    return data
 
 
 
@@ -1304,60 +1382,113 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
     else:
         metrics["ActivityIdle ~ Animating end"] = to_ms(animating_end - cho_end) if animating_end > cho_end else 0.0
 
-    # [Thread State]
-    state_summary = get_thread_state_summary(tp, app_tid, touch_down_ts, (end_ts - touch_down_ts) if end_ts else 0)
-    metrics["Running"] = state_summary.get("Running", 0.0)
-    metrics["Runnable"] = state_summary.get("R", 0.0) + state_summary.get("R+", 0.0)
-    metrics["Uninterruptible Sleep"] = state_summary.get("D", 0.0)
-    metrics["Sleeping"] = state_summary.get("S", 0.0)
-
-    # [Block I/O]
-    safe_start_time = touch_down_ts if touch_down_ts else 0
-    safe_end_time = end_ts if end_ts else (safe_start_time + 10_000_000_000) # Fallback +10s
-
-    block_io_df = top_block_IO(tp, app_pid, safe_start_time, safe_end_time)
-    metrics["Block_IO_Data"] = process_block_io_data(block_io_df)
-
-    # [LoadApkAssets]
-    load_apk_pids = get_pid_list(tp) 
-    if not load_apk_pids:
-        load_apk_pids = [app_pid]
-    if app_pid not in load_apk_pids:
-        load_apk_pids.append(app_pid)
-    loadapk_df = get_loadApkAsset(tp, load_apk_pids, touch_down_ts, end_ts if end_ts else 0)
-    metrics["LoadApkAsset_Data"] = process_loadapk_data(loadapk_df)
-
-    # [CPU Usage]
-    cpu_cores = [1,2,3,4,5,6,7]
-    dur_time = (end_ts - touch_down_ts) if end_ts else 0
-
-    # 1. Get Top Process (with PID mapping from dumpstate)
-    cpu_proc_df = get_top_cpu_usage_process(tp, touch_down_ts, dur_time, cpu_cores)
-    metrics["CPU_Process_Data"] = process_cpu_data_process(cpu_proc_df, pid_mapping)
+    # =========================================================================
+    # [NEW] MULTI END_TS QUERY LOGIC
+    # Query data cho TẤT CẢ available end_ts types để có thể chọn common type sau
+    # =========================================================================
     
-    # 2. Get Top Thread
-    cpu_thread_df = get_top_cpu_usage_thread(tp, touch_down_ts, dur_time, cpu_cores)
-    metrics["CPU_Thread_Data"] = process_cpu_data_thread(cpu_thread_df)
-
-    # [Binder]
-    binder_count, binder_dur = get_binder_transaction(tp, app_tid, end_ts if end_ts else 0)
-    metrics["Binder_Transaction_Data"] = {
-        'count': binder_count if binder_count is not None else 0,
-        'duration_ms': binder_dur if binder_dur is not None else 0.0
-    }
-
-    # [Abnormal process]
-    abnormal_start = touch_down_ts if touch_down_ts else 0
-    abnormal_end = end_ts if end_ts else 0
-    target_abnormal_slices = ['bindApplication'] 
-    abnormal_df = get_abnormal_processes(tp, abnormal_start, abnormal_end, app_pid, target_abnormal_slices)
-    metrics["Abnormal_Process_Data"] = process_abnormal_data(abnormal_df)
-
-    # [Background Process States]
-    bg_start_ts = touch_down_ts if touch_down_ts else 0
-    bg_end_ts = end_ts if end_ts else 0
-    metrics["Background_Process_States"] = get_background_process_states(tp, bg_start_ts, bg_end_ts)
+    # 1. Collect all available end_ts values
+    end_ts_variants = {}
+    
+    if end_idle and end_idle > 0:
+        end_ts_variants["activityIdle"] = end_idle
+    
+    if animating_end and animating_end > 0:
+        end_ts_variants["animating"] = animating_end
+    
+    # Camera có thêm startPreviewRequest
+    if is_camera:
+        preview_data = result.get("StartPreviewRequest", [0, 0])
+        if preview_data[0] > 0 and preview_data[1] > 0:
+            end_ts_variants["startPreviewRequest"] = preview_data[0] + preview_data[1]
+    
+    metrics["end_ts_variants"] = end_ts_variants
+    metrics["end_ts_primary"] = end_ts  # end_ts được chọn theo logic hiện tại (để backward compatible)
+    
+    # 2. Query data cho MỖI end_ts type
+    data_by_end_ts = {}
+    
+    for end_ts_type, end_ts_value in end_ts_variants.items():
+        if end_ts_value and end_ts_value > 0:
+            data_by_end_ts[end_ts_type] = _query_end_ts_dependent_data(
+                tp=tp,
+                touch_down_ts=touch_down_ts,
+                end_ts=end_ts_value,
+                app_pid=app_pid,
+                app_tid=app_tid,
+                pid_mapping=pid_mapping
+            )
+    
+    metrics["data_by_end_ts"] = data_by_end_ts
+    
+    # 3. Backward compatible: Copy data từ primary end_ts vào metrics root
+    # Xác định end_ts_type tương ứng với end_ts đã chọn
+    primary_type = None
+    if end_ts:
+        # Tìm type gần nhất với end_ts primary
+        for etype, evalue in end_ts_variants.items():
+            if evalue == end_ts:
+                primary_type = etype
+                break
+        
+        # Fallback: Nếu end_ts = max của nhiều giá trị, chọn type lớn nhất
+        if not primary_type and end_ts_variants:
+            primary_type = max(end_ts_variants.keys(), key=lambda k: end_ts_variants[k])
+    
+    if primary_type and primary_type in data_by_end_ts:
+        primary_data = data_by_end_ts[primary_type]
+        # Copy các fields vào metrics root để backward compatible
+        for key in ["Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
+                    "Block_IO_Data", "LoadApkAsset_Data", "CPU_Process_Data", 
+                    "CPU_Thread_Data", "Binder_Transaction_Data", 
+                    "Abnormal_Process_Data", "Background_Process_States"]:
+            if key in primary_data:
+                metrics[key] = primary_data[key]
+    else:
+        # Fallback: Query với end_ts primary (logic cũ)
+        state_summary = get_thread_state_summary(tp, app_tid, touch_down_ts, (end_ts - touch_down_ts) if end_ts else 0)
+        metrics["Running"] = state_summary.get("Running", 0.0)
+        metrics["Runnable"] = state_summary.get("R", 0.0) + state_summary.get("R+", 0.0)
+        metrics["Uninterruptible Sleep"] = state_summary.get("D", 0.0)
+        metrics["Sleeping"] = state_summary.get("S", 0.0)
+        
+        safe_start_time = touch_down_ts if touch_down_ts else 0
+        safe_end_time = end_ts if end_ts else (safe_start_time + 10_000_000_000)
+        block_io_df = top_block_IO(tp, app_pid, safe_start_time, safe_end_time)
+        metrics["Block_IO_Data"] = process_block_io_data(block_io_df)
+        
+        load_apk_pids = get_pid_list(tp)
+        if not load_apk_pids:
+            load_apk_pids = [app_pid]
+        if app_pid not in load_apk_pids:
+            load_apk_pids.append(app_pid)
+        loadapk_df = get_loadApkAsset(tp, load_apk_pids, touch_down_ts, end_ts if end_ts else 0)
+        metrics["LoadApkAsset_Data"] = process_loadapk_data(loadapk_df)
+        
+        cpu_cores = [0, 1, 2, 3, 4, 5, 6, 7]
+        dur_time = (end_ts - touch_down_ts) if end_ts else 0
+        cpu_proc_df = get_top_cpu_usage_process(tp, touch_down_ts, dur_time, cpu_cores)
+        metrics["CPU_Process_Data"] = process_cpu_data_process(cpu_proc_df, pid_mapping)
+        cpu_thread_df = get_top_cpu_usage_thread(tp, touch_down_ts, dur_time, cpu_cores)
+        metrics["CPU_Thread_Data"] = process_cpu_data_thread(cpu_thread_df)
+        
+        binder_count, binder_dur = get_binder_transaction(tp, app_tid, end_ts if end_ts else 0)
+        metrics["Binder_Transaction_Data"] = {
+            'count': binder_count if binder_count is not None else 0,
+            'duration_ms': binder_dur if binder_dur is not None else 0.0
+        }
+        
+        abnormal_start = touch_down_ts if touch_down_ts else 0
+        abnormal_end = end_ts if end_ts else 0
+        target_abnormal_slices = ['bindApplication']
+        abnormal_df = get_abnormal_processes(tp, abnormal_start, abnormal_end, app_pid, target_abnormal_slices)
+        metrics["Abnormal_Process_Data"] = process_abnormal_data(abnormal_df)
+        
+        metrics["Background_Process_States"] = get_background_process_states(tp, touch_down_ts if touch_down_ts else 0, end_ts if end_ts else 0)
 
     metrics["PID_Mapping"] = pid_mapping if pid_mapping else {}
     metrics["App Package"] = app_pkg 
     return metrics
+
+
+    
