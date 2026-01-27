@@ -65,9 +65,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -338,6 +338,79 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
 
 
 # ---------------------------------------------------------------------------
+# Excel Creation - Helper Functions
+# ---------------------------------------------------------------------------
+
+def select_common_end_ts_type(dut_metrics: Dict[str, Any], ref_metrics: Dict[str, Any]) -> Optional[str]:
+    """
+    Chọn end_ts type mà CẢ DUT và REF đều có.
+    Ưu tiên: Chọn type có giá trị LỚN NHẤT (execution time dài nhất).
+    
+    Args:
+        dut_metrics: Metrics từ DUT cycle
+        ref_metrics: Metrics từ REF cycle
+        
+    Returns:
+        Common end_ts type name hoặc None nếu không có common type
+    """
+    dut_variants = dut_metrics.get("end_ts_variants", {})
+    ref_variants = ref_metrics.get("end_ts_variants", {})
+    
+    # Tìm các types mà CẢ HAI đều có (value > 0)
+    dut_types = {k for k, v in dut_variants.items() if v and v > 0}
+    ref_types = {k for k, v in ref_variants.items() if v and v > 0}
+    common_types = dut_types & ref_types
+    
+    if not common_types:
+        return None
+    
+    # Chọn type có giá trị LỚN NHẤT (average của DUT và REF)
+    best_type = None
+    best_value = 0
+    
+    for etype in common_types:
+        avg_value = (dut_variants.get(etype, 0) + ref_variants.get(etype, 0)) / 2
+        if avg_value > best_value:
+            best_value = avg_value
+            best_type = etype
+    
+    return best_type
+
+
+def get_metrics_for_end_ts_type(metrics: Dict[str, Any], end_ts_type: str) -> Dict[str, Any]:
+    """
+    Lấy data tương ứng với end_ts_type từ metrics.
+    Nếu không có data_by_end_ts, fallback về metrics root.
+    
+    Args:
+        metrics: Full metrics dict từ analyze_trace
+        end_ts_type: Type cần lấy ("activityIdle", "animating", "startPreviewRequest")
+        
+    Returns:
+        Dict chứa data cho end_ts_type đó, hoặc metrics root nếu không có
+    """
+    data_by_end_ts = metrics.get("data_by_end_ts", {})
+    
+    if end_ts_type and end_ts_type in data_by_end_ts:
+        # Merge: base metrics + data từ end_ts_type
+        result = metrics.copy()
+        type_data = data_by_end_ts[end_ts_type]
+        
+        # Override các fields phụ thuộc end_ts
+        for key in ["Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
+                    "Block_IO_Data", "LoadApkAsset_Data", "CPU_Process_Data",
+                    "CPU_Thread_Data", "Binder_Transaction_Data",
+                    "Abnormal_Process_Data", "Background_Process_States", "App Execution Time"]:
+            if key in type_data:
+                result[key] = type_data[key]
+        
+        return result
+    
+    # Fallback: return metrics as-is (backward compatible)
+    return metrics
+
+
+# ---------------------------------------------------------------------------
 # Excel Creation
 # ---------------------------------------------------------------------------
 
@@ -527,8 +600,58 @@ def create_sheet(
     num_ref_cycles = len(ref_cycles)
     max_cycles = max(num_dut_cycles, num_ref_cycles)
     
+    # =========================================================================
+    # [NEW] PRE-PROCESS: Chọn common end_ts type cho mỗi cycle pair
+    # Điều này đảm bảo DUT và REF được so sánh với cùng time window
+    # =========================================================================
+    adjusted_dut_cycles = []
+    adjusted_ref_cycles = []
+    end_ts_types_used = []  # Track which type was used for each cycle
+    
+    for i in range(max_cycles):
+        dut_cycle = dut_cycles[i] if i < num_dut_cycles else None
+        ref_cycle = ref_cycles[i] if i < num_ref_cycles else None
+        
+        if dut_cycle and ref_cycle:
+            # Có cả DUT và REF → tìm common end_ts type
+            common_type = select_common_end_ts_type(dut_cycle, ref_cycle)
+            
+            if common_type:
+                # Lấy data cho common type
+                adj_dut = get_metrics_for_end_ts_type(dut_cycle, common_type)
+                adj_ref = get_metrics_for_end_ts_type(ref_cycle, common_type)
+                end_ts_types_used.append(common_type)
+            else:
+                # Không có common type → dùng data gốc, sẽ có warning
+                adj_dut = dut_cycle
+                adj_ref = ref_cycle
+                end_ts_types_used.append("mismatch")
+        elif dut_cycle:
+            adj_dut = dut_cycle
+            adj_ref = None
+            end_ts_types_used.append("dut_only")
+        elif ref_cycle:
+            adj_dut = None
+            adj_ref = ref_cycle
+            end_ts_types_used.append("ref_only")
+        else:
+            adj_dut = None
+            adj_ref = None
+            end_ts_types_used.append(None)
+        
+        adjusted_dut_cycles.append(adj_dut)
+        adjusted_ref_cycles.append(adj_ref)
+    
+    # Replace cycles với adjusted versions
+    # dut_cycles = [c for c in adjusted_dut_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_dut_cycles if c is not None]))
+    # ref_cycles = [c for c in adjusted_ref_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_ref_cycles if c is not None]))
+    
+    # Rebuild lists to maintain original length
+    dut_cycles = adjusted_dut_cycles
+    ref_cycles = adjusted_ref_cycles
+
     # --- CHECK GLOBAL STATE (ALL COLD / ALL WARM) ---
-    all_cycles_data = dut_cycles + ref_cycles
+    all_cycles_data = [c for c in dut_cycles + ref_cycles if c is not None]
     has_cold = any(c.get("Launch Type") == "Cold" for c in all_cycles_data)
     has_warm = any(c.get("Launch Type") == "Warm" for c in all_cycles_data)
 
@@ -553,7 +676,8 @@ def create_sheet(
     col_idx = 1
     
     def get_cycle_title(idx, cycle_list):
-        if idx < len(cycle_list):
+        # [FIX] Thêm điều kiện kiểm tra cycle_list[idx] is not None
+        if idx < len(cycle_list) and cycle_list[idx] is not None:
             l_type = cycle_list[idx].get("Launch Type", "Unknown")
             return f"{idx + 1} ({l_type})"
         return f"{idx + 1}"
@@ -601,7 +725,7 @@ def create_sheet(
         col_idx = 1
         dut_values = []
         for i in range(max_cycles):
-            if i < len(dut_cycles):
+            if i < len(dut_cycles) and dut_cycles[i] is not None:
                 cycle_data = dut_cycles[i]
                 c_type = cycle_data.get("Launch Type")
                 
@@ -635,7 +759,7 @@ def create_sheet(
         # --- WRITE REF DATA (Masking Logic) ---
         ref_values = []
         for i in range(max_cycles):
-            if i < len(ref_cycles):
+            if i < len(ref_cycles) and ref_cycles[i] is not None:
                 cycle_data = ref_cycles[i]
                 c_type = cycle_data.get("Launch Type")
                 
@@ -667,6 +791,7 @@ def create_sheet(
         col_idx += 1
         
         # --- DIFF COLUMN ---
+        diff_val = dut_avg - ref_avg
         if metric_key == "Uninterruptible Sleep":
             if diff_val > 30:  # Ngưỡng 30ms cho Uninterruptible Sleep
                 fmt_diff = fmt_diff_slow      
@@ -701,7 +826,7 @@ def create_sheet(
     # --- Thu thập dữ liệu DUT ---
     for i in range(max_cycles):
         procs = []
-        if i < len(dut_cycles):
+        if i < len(dut_cycles) and dut_cycles[i] is not None:
             # Lấy data từ 2 nguồn: Abnormal & Background
             abnormal = dut_cycles[i].get("Abnormal_Process_Data", [])
             bg = dut_cycles[i].get("Background_Process_States", [])
@@ -727,7 +852,7 @@ def create_sheet(
     # --- Thu thập dữ liệu REF ---
     for i in range(max_cycles):
         procs = []
-        if i < len(ref_cycles):
+        if i < len(ref_cycles) and ref_cycles[i] is not None:
             abnormal = ref_cycles[i].get("Abnormal_Process_Data", [])
             bg = ref_cycles[i].get("Background_Process_States", [])
             
@@ -831,7 +956,7 @@ def create_sheet(
     for i in range(max_cycles_abnormal):
         # 1. Thu thập & Gộp danh sách tên Process cho DUT
         dut_names_set = set()
-        if i < len(dut_cycles):
+        if i < len(dut_cycles) and dut_cycles[i] is not None:
             # Nguồn 1: Abnormal (bindApplication)
             abnormal_data = dut_cycles[i].get("Abnormal_Process_Data", [])
             for p in abnormal_data:
@@ -847,7 +972,7 @@ def create_sheet(
 
         # 2. Thu thập & Gộp danh sách tên Process cho REF
         ref_names_set = set()
-        if i < len(ref_cycles):
+        if i < len(ref_cycles) and ref_cycles[i] is not None:
             # Nguồn 1: Abnormal
             abnormal_data = ref_cycles[i].get("Abnormal_Process_Data", [])
             for p in abnormal_data:
@@ -899,10 +1024,10 @@ def create_sheet(
     row_idx += 3
 
     # Load Data
-    all_dut_proc = [cycle.get("CPU_Process_Data", []) for cycle in dut_cycles]
-    all_ref_proc = [cycle.get("CPU_Process_Data", []) for cycle in ref_cycles]
-    all_dut_thread = [cycle.get("CPU_Thread_Data", []) for cycle in dut_cycles]
-    all_ref_thread = [cycle.get("CPU_Thread_Data", []) for cycle in ref_cycles]
+    all_dut_proc = [cycle.get("CPU_Process_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_proc = [cycle.get("CPU_Process_Data", []) if cycle else [] for cycle in ref_cycles]
+    all_dut_thread = [cycle.get("CPU_Thread_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_thread = [cycle.get("CPU_Thread_Data", []) if cycle else [] for cycle in ref_cycles]
 
     # Formats
     fmt_cpu_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFE4B5", "border": 1})
@@ -1107,8 +1232,8 @@ def create_sheet(
     fmt_blockio_val = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
     
     # Thu thập Block I/O data từ tất cả cycles
-    all_dut_block_io = [cycle.get("Block_IO_Data", []) for cycle in dut_cycles]
-    all_ref_block_io = [cycle.get("Block_IO_Data", []) for cycle in ref_cycles]
+    all_dut_block_io = [cycle.get("Block_IO_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_block_io = [cycle.get("Block_IO_Data", []) if cycle else [] for cycle in ref_cycles]
     
     # Lấy danh sách tất cả library names xuất hiện
     all_library_names = set()
@@ -1240,8 +1365,8 @@ def create_sheet(
     row_idx += 3
 
     # Thu thập LoadApkAsset data từ tất cả cycles
-    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", []) for cycle in dut_cycles]
-    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", []) for cycle in ref_cycles]
+    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", []) if cycle else [] for cycle in ref_cycles]
 
     # Tạo union set của tất cả LoadApkAsset names
     all_loadapk_names = set()
@@ -1354,9 +1479,9 @@ def create_sheet(
     row_idx += 3
     
     # Thu thập Binder Transaction data từ tất cả cycles
-    all_dut_binder = [cycle.get("Binder_Transaction_Data", {}) for cycle in dut_cycles]
+    all_dut_binder = [cycle.get("Binder_Transaction_Data", {}) if cycle else {} for cycle in dut_cycles]
     # print("all_dut_binder", all_dut_binder)
-    all_ref_binder = [cycle.get("Binder_Transaction_Data", {}) for cycle in ref_cycles]
+    all_ref_binder = [cycle.get("Binder_Transaction_Data", {}) if cycle else {} for cycle in ref_cycles]
     
     # Format cho Statistics table
     fmt_stats_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#E6E6FA", "border": 1, "border_color": "#000000"})
@@ -1586,7 +1711,7 @@ def main():
     args = parser.parse_args()
     
     try:
-        run_analysis(args.dut_folder, args.ref_folder, extracted=args.extracted)
+        run_analysis(args.dut_folder, args.ref_folder, extracted=True)
     except Exception as e:
         print(f"\n[ERROR] Analysis failed: {e}")
         traceback.print_exc()

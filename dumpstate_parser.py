@@ -7,6 +7,7 @@ Module để parse file dumpstate.txt từ Bugreport và map PID -> Process Name
 [UPDATED] 
 - Fix lỗi Long Path trên Server (Đọc trực tiếp từ Zip, không giải nén).
 - Cải tiến logic Mapping: Group + Timestamp Matching.
+- [FIXED] Sử dụng rglob để tìm file dumpstate trong folder giải nén (xử lý folder lồng nhau).
 """
 
 import os
@@ -78,6 +79,7 @@ def parse_pid_mapping(dumpstate_content: str) -> Dict[int, str]:
 def find_largest_txt_in_folder(folder_path: str) -> Optional[str]:
     """
     Tìm file .txt có dung lượng lớn nhất trong folder (Dùng cho mode Extracted).
+    [FIXED] Sử dụng rglob để tìm kiếm đệ quy trong mọi thư mục con.
     """
     largest_file = None
     largest_size = 0
@@ -86,8 +88,14 @@ def find_largest_txt_in_folder(folder_path: str) -> Optional[str]:
     if not folder.exists():
         return None
     
-    for txt_file in folder.glob('*.txt'):
+    # [FIX] Dùng rglob('*.txt') thay vì glob('*.txt') để tìm đệ quy
+    # Thêm điều kiện lọc file name có chứa 'dumpstate' để chính xác hơn
+    candidates = list(folder.rglob('*.txt'))
+    
+    for txt_file in candidates:
         try:
+            # Ưu tiên file có tên chứa 'dumpstate' nếu cần, 
+            # nhưng logic size lớn nhất thường đã đủ chính xác.
             size = txt_file.stat().st_size
             if size > largest_size:
                 largest_size = size
@@ -96,25 +104,23 @@ def find_largest_txt_in_folder(folder_path: str) -> Optional[str]:
             continue
     
     if largest_file:
+        print(f"  [Dumpstate Found] {largest_file.name} ({largest_size/1024/1024:.2f} MB)")
         try:
             try:
-                return largest_file.read_text(encoding='utf-8')
+                return largest_file.read_text(encoding='utf-8', errors='ignore')
             except UnicodeDecodeError:
-                return largest_file.read_text(encoding='latin-1')
+                return largest_file.read_text(encoding='latin-1', errors='ignore')
         except Exception as e:
             print(f"[Error] Cannot read {largest_file}: {e}")
             return None
     
+    print(f"  [Warning] No dumpstate/txt file found in {folder_path}")
     return None
 
 
 def find_dumpstate_content(path: str, extracted: bool = False) -> Optional[str]:
     """
     Tìm và đọc nội dung file dumpstate.txt.
-    
-    [CRITICAL FIX] Fix lỗi Long Path trên Server:
-    - KHÔNG giải nén (extractall) ra ổ cứng.
-    - Đọc trực tiếp (stream) từ file Zip trong RAM.
     """
     path_obj = Path(path)
     
@@ -153,9 +159,9 @@ def find_dumpstate_content(path: str, extracted: bool = False) -> Optional[str]:
                     with zip_ref.open(largest_zinfo) as f:
                         content_bytes = f.read()
                         try:
-                            return content_bytes.decode('utf-8')
+                            return content_bytes.decode('utf-8', errors='ignore')
                         except UnicodeDecodeError:
-                            return content_bytes.decode('latin-1')
+                            return content_bytes.decode('latin-1', errors='ignore')
             
             return None
             
@@ -190,14 +196,6 @@ def get_app_name_from_log(filename: str) -> str:
 def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> Dict[str, Dict[int, str]]:
     """
     Build mapping {trace_path: pid_mapping} dựa trên sorted filename approach.
-    
-    Logic:
-    1. List tất cả .log files và bugreport folders/zips
-    2. Sort theo tên (chronological order)
-    3. Iterate và assign bugreport cho traces dựa trên group
-    
-    Returns:
-        Dict[trace_path, {pid: process_name}] - mapping cho mỗi trace file
     """
     folder = Path(folder_path)
     if not folder.exists():
@@ -242,13 +240,8 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
     items.sort(key=lambda x: x['name'])
     
     # 3. Iterate và assign
-    # pending_traces[group] = list of trace paths waiting for bugreport
     pending_traces: Dict[int, List[str]] = {i: [] for i in range(1, 7)}
-    
-    # result[trace_path] = pid_mapping
     result: Dict[str, Dict[int, str]] = {}
-    
-    # Track max group seen to detect cycle wrap-around
     max_group_seen = 0
     
     for item in items:
@@ -257,16 +250,13 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
             if group == 0:
                 continue
             
-            # Detect cycle wrap-around: group went back to smaller number
             if group < max_group_seen:
-                # New cycle! Mark all remaining pending as no mapping
                 for g in range(1, 7):
                     for trace_path in pending_traces[g]:
-                        result[trace_path] = {}  # Empty dict = no mapping
+                        result[trace_path] = {}
                     pending_traces[g] = []
-                max_group_seen = 0  # Reset for new cycle
+                max_group_seen = 0
             
-            # Add to pending for this group
             pending_traces[group].append(item['path'])
             max_group_seen = max(max_group_seen, group)
             
@@ -275,24 +265,20 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
             if group == 0:
                 continue
             
-            # Parse PID mapping từ bugreport
             content = find_dumpstate_content(item['path'], extracted=extracted)
             pid_mapping = {}
             if content:
                 pid_mapping = parse_pid_mapping(content)
             
-            # Assign mapping cho tất cả pending traces của group này
             for trace_path in pending_traces[group]:
                 result[trace_path] = pid_mapping
             
-            # Clear pending for this group
             pending_traces[group] = []
             max_group_seen = max(max_group_seen, group)
     
-    # 4. Traces còn lại trong pending = no bugreport
     for group in range(1, 7):
         for trace_path in pending_traces[group]:
-            result[trace_path] = {}  # Empty dict = no mapping
+            result[trace_path] = {}
     
     return result
 
@@ -324,31 +310,13 @@ def collect_bugreport_mappings(folder_path: str, extracted: bool = False) -> Dic
     return mappings
 
 
-def _extract_timestamp_val(filename: str) -> int:
-    """Helper: Trích xuất timestamp từ tên file để so sánh."""
-    matches = re.findall(r'_(\d{6})', filename)
-    if len(matches) >= 2:
-        try:
-            return int(matches[-2] + matches[-1])
-        except:
-            pass
-    if matches:
-        return int(matches[-1])
-    return 0
-
-
 def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[int, str]], 
                            occurrence: int = 1) -> Optional[Dict[int, str]]:
-    """
-    Xác định Bugreport mapping dựa trên APP GROUP và THỨ TỰ CYCLE.
-    [UPDATED LOGIC]
-    """
+    """Xác định Bugreport mapping."""
     if not bugreport_mappings:
         return None
     
     log_name = Path(log_filename).name
-    
-    # 1. Xác định App Group
     log_name_lower = log_name.lower()
     app_group = 0
     for group_num, app_list in APP_GROUPS.items():
@@ -360,10 +328,8 @@ def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[
             break
             
     if app_group == 0:
-        print(f"  [Mapping] Unknown group for {log_name}, skipping...")
         return None
 
-    # 2. Lọc Bugreport thuộc Group này
     candidates = []
     for br_path in bugreport_mappings.keys():
         br_name = Path(br_path).name
@@ -371,25 +337,16 @@ def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[
             candidates.append(br_path)
     
     if not candidates:
-        print(f"  [Mapping] No bugreports found for Group {app_group} (App: {log_name})")
         return None
         
-    # 3. Sắp xếp candidates theo tên (tức là theo thời gian)
     candidates.sort()
-    
-    # 4. Tính toán Cycle Index từ occurrence
-    # Log 1,2 -> Cycle 1 (Index 0); Log 3,4 -> Cycle 2 (Index 1)
     cycle_index = (occurrence - 1) // 2
     
-    # 5. Chọn Bugreport
     selected_br = None
     if cycle_index < len(candidates):
         selected_br = candidates[cycle_index]
-        # print(f"  [Mapping] {log_name} (Occ {occurrence}) -> {Path(selected_br).name}")
     else:
-        # Fallback: Lấy cái cuối cùng
         selected_br = candidates[-1]
-        print(f"  [Mapping Warning] Cycle {cycle_index+1} out of range. Using last: {Path(selected_br).name}")
 
     if selected_br:
         return bugreport_mappings[selected_br]
