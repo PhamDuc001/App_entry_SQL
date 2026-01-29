@@ -13,7 +13,7 @@ import os
 import re
 import zipfile
 import shutil
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from pathlib import Path
 
 
@@ -187,9 +187,10 @@ def get_app_name_from_log(filename: str) -> str:
     return ""
 
 
-def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> Dict[str, Dict[int, str]]:
+def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> Dict[str, Dict[str, Any]]:
     """
-    Build mapping {trace_path: pid_mapping} dựa trên sorted filename approach.
+    Build mapping {trace_path: {'pid_mapping': {...}, 'bugreport_path': str}} 
+    dựa trên sorted filename approach.
     
     Logic:
     1. List tất cả .log files và bugreport folders/zips
@@ -197,7 +198,7 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
     3. Iterate và assign bugreport cho traces dựa trên group
     
     Returns:
-        Dict[trace_path, {pid: process_name}] - mapping cho mỗi trace file
+        Dict[trace_path, {'pid_mapping': {pid: name}, 'bugreport_path': str}]
     """
     folder = Path(folder_path)
     if not folder.exists():
@@ -245,8 +246,8 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
     # pending_traces[group] = list of trace paths waiting for bugreport
     pending_traces: Dict[int, List[str]] = {i: [] for i in range(1, 7)}
     
-    # result[trace_path] = pid_mapping
-    result: Dict[str, Dict[int, str]] = {}
+    # result[trace_path] = {'pid_mapping': {...}, 'bugreport_path': str}
+    result: Dict[str, Dict[str, Any]] = {}
     
     # Track max group seen to detect cycle wrap-around
     max_group_seen = 0
@@ -262,7 +263,7 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
                 # New cycle! Mark all remaining pending as no mapping
                 for g in range(1, 7):
                     for trace_path in pending_traces[g]:
-                        result[trace_path] = {}  # Empty dict = no mapping
+                        result[trace_path] = {'pid_mapping': {}, 'bugreport_path': ''}
                     pending_traces[g] = []
                 max_group_seen = 0  # Reset for new cycle
             
@@ -275,15 +276,20 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
             if group == 0:
                 continue
             
+            bugreport_path = item['path']
+            
             # Parse PID mapping từ bugreport
-            content = find_dumpstate_content(item['path'], extracted=extracted)
+            content = find_dumpstate_content(bugreport_path, extracted=extracted)
             pid_mapping = {}
             if content:
                 pid_mapping = parse_pid_mapping(content)
             
             # Assign mapping cho tất cả pending traces của group này
             for trace_path in pending_traces[group]:
-                result[trace_path] = pid_mapping
+                result[trace_path] = {
+                    'pid_mapping': pid_mapping,
+                    'bugreport_path': bugreport_path
+                }
             
             # Clear pending for this group
             pending_traces[group] = []
@@ -292,7 +298,7 @@ def build_trace_bugreport_mapping(folder_path: str, extracted: bool = False) -> 
     # 4. Traces còn lại trong pending = no bugreport
     for group in range(1, 7):
         for trace_path in pending_traces[group]:
-            result[trace_path] = {}  # Empty dict = no mapping
+            result[trace_path] = {'pid_mapping': {}, 'bugreport_path': ''}
     
     return result
 
@@ -395,3 +401,381 @@ def get_bugreport_for_log(log_filename: str, bugreport_mappings: Dict[str, Dict[
         return bugreport_mappings[selected_br]
         
     return None
+
+
+# ---------------------------------------------------------------------------
+# Extended Parsing Functions for Profiling Table
+# ---------------------------------------------------------------------------
+
+# Package name mapping for apps
+APP_PACKAGE_MAPPING = {
+    'camera': 'com.sec.android.app.camera',
+    'helloworld': 'com.samsung.performance.helloworld_v6',
+    'hello': 'com.samsung.performance.helloworld_v6',
+    'calllog': 'com.samsung.android.dialer',
+    'call': 'com.samsung.android.dialer',
+    'dial': 'com.samsung.android.dialer',
+    'clock': 'com.sec.android.app.clockpackage',
+    'contact': 'com.samsung.android.app.contacts',
+    'calendar': 'com.samsung.android.calendar',
+    'calculator': 'com.sec.android.app.popupcalculator',
+    'gallery': 'com.sec.android.gallery3d',
+    'message': 'com.samsung.android.messaging',
+    'menu': 'com.sec.android.app.launcher',
+    'myfile': 'com.sec.android.app.myfiles',
+    'sip': 'com.samsung.android.honeyboard',
+    'internet': 'com.sec.android.app.sbrowser',
+    'note': 'com.samsung.android.app.notes',
+    'setting': 'com.android.settings',
+    'voice': 'com.sec.android.app.voicenote',
+    'recent': 'com.sec.android.app.launcher'
+}
+
+# Pageboostd app key mapping (no dots in key)
+PAGEBOOSTD_APP_MAPPING = {
+    'camera': 'comsecandroidappcamera',
+    'helloworld': 'comsamsungperformancehelloworld_v6',
+    'hello': 'comsamsungperformancehelloworld_v6',
+    'dial': 'comsamsungandroiddialer',
+    'call': 'comsamsungandroiddialer',
+    'clock': 'comsecandroidappclockpackage',
+    'contact': 'comsamsungandroidappcontacts',
+    'calendar': 'comsamsungandroidcalendar',
+    'calculator': 'comsecandroidapppopupcalculator',
+    'gallery': 'comsecandroidgallery3d',
+    'message': 'comsamsungandroidmessaging',
+    'menu': 'comsecandroidapplauncher',
+    'myfile': 'comsecandroidappmyfiles',
+    'sip': 'comexampleedittexttest3',
+    'internet': 'comsecandroidappsbrowser',
+    'note': 'comsamsungandroidappnotes',
+    'setting': 'comandroidsettings',
+    'voice': 'comsecandroidappvoicenote',
+    'recent': 'comsecandroidapplauncher'
+}
+
+# Pre-compiled regex patterns for process start/kill parsing
+PROC_START_PATTERN = re.compile(r"I am_proc_start: \[.*?,.*?,.*?,(.*?),(.*?),")
+KILL_PATTERN = re.compile(r"I am_kill : \[[^,]*,[^,]*,[^,]*,[^,]*,([^,]+),[^\]]*\]")
+
+def parse_uptime(dumpstate_content: str) -> int:
+    """
+    Extract Uptime từ dumpstate.
+    Format: Uptime: up 0 weeks, 0 days, 0 hours, 8 minutes,  load average: 14.52, 13.21, 7.27
+    Returns: uptime in minutes as integer, or 0 if not found
+    """
+    if not dumpstate_content:
+        return 0
+    
+    for line in dumpstate_content.split('\n'):
+        if line.startswith('Uptime:'):
+            # Extract minutes value: "Uptime: up X weeks, Y days, Z hours, N minutes"
+            match = re.search(r'(\d+)\s*minutes', line)
+            if match:
+                return int(match.group(1))
+    return 0
+
+
+def parse_pss_for_app(dumpstate_content: str, app_name: str) -> float:
+    """
+    Lấy PSS (Proportional Set Size) cho specific app từ dumpstate.
+    Tìm trong phần 'Total PSS by process:'.
+    
+    Returns: PSS value in MB (0.0 if not found)
+    """
+    if not dumpstate_content or not app_name:
+        return 0.0
+    
+    # Get package name for app
+    app_lower = app_name.lower()
+    package_name = None
+    for key, pkg in APP_PACKAGE_MAPPING.items():
+        if key in app_lower:
+            package_name = pkg
+            break
+    
+    if not package_name:
+        return 0.0
+    
+    # Find PSS section
+    start_marker = "Total PSS by process:"
+    end_marker = "Total PSS by OOM adjustment:"
+    
+    start_idx = dumpstate_content.find(start_marker)
+    if start_idx == -1:
+        return 0.0
+    
+    end_idx = dumpstate_content.find(end_marker, start_idx)
+    if end_idx == -1:
+        section = dumpstate_content[start_idx:start_idx + 50000]
+    else:
+        section = dumpstate_content[start_idx:end_idx]
+    
+    # Parse PSS entries - Format: "    314,911K: com.android.systemui (pid 2009)"
+    pattern = r'^\s*([\d,]+)K:\s+' + re.escape(package_name) + r'\s+'
+    
+    for line in section.split('\n'):
+        match = re.match(pattern, line)
+        if match:
+            try:
+                pss_kb = int(match.group(1).replace(',', ''))
+                return round(pss_kb / 1024.0, 2)  # Convert to MB
+            except ValueError:
+                continue
+    
+    return 0.0
+
+
+def parse_pageboostd_for_app(dumpstate_content: str, app_name: str) -> float:
+    """
+    Lấy Pageboostd data_amount cho specific app từ dumpstate.
+    Pattern: pageboostd: alp end : app <appkey> data_amount <value>
+    
+    Returns: data_amount in MB (0.0 if not found)
+    """
+    if not dumpstate_content or not app_name:
+        return 0.0
+    
+    # Get pageboostd key for app
+    app_lower = app_name.lower()
+    app_key = None
+    for key, pageboost_key in PAGEBOOSTD_APP_MAPPING.items():
+        if key in app_lower:
+            app_key = pageboost_key
+            break
+    
+    if not app_key:
+        return 0.0
+    
+    # Pattern: E pageboostd: alp end : app comsecandroidappclockpackage data_amount 35433800
+    pattern = re.compile(r'pageboostd.*app\s+' + re.escape(app_key) + r'\s+data_amount\s+(\d+)')
+    
+    match = pattern.search(dumpstate_content)
+    if match:
+        try:
+            data_amount = int(match.group(1))
+            return round(data_amount / 1000000.0, 2)  # Convert to MB
+        except ValueError:
+            pass
+    
+    return 0.0
+
+
+# Pre-compiled regex patterns for start/kill analysis
+PROC_START_PATTERN = re.compile(r"I am_proc_start: \[.*?,.*?,.*?,(.*?),(.*?),")
+KILL_PATTERN = re.compile(r"I am_kill : \[[^,]*,[^,]*,[^,]*,[^,]*,([^,]+),[^\]]*\]")
+
+
+def parse_start_reasons(dumpstate_content: str, app_name: str) -> str:
+    """
+    Lấy Start Reasons cho specific app từ dumpstate.
+    
+    Returns: Formatted string with counts, e.g., "broadcast x2, content provider"
+    """
+    if not dumpstate_content or not app_name:
+        return ""
+    
+    # Get package name
+    app_lower = app_name.lower()
+    package_name = None
+    for key, pkg in APP_PACKAGE_MAPPING.items():
+        if key in app_lower:
+            package_name = pkg
+            break
+    
+    if not package_name:
+        return ""
+    
+    # Count occurrences of each reason
+    reason_counts = {}
+    for line in dumpstate_content.split('\n'):
+        match = PROC_START_PATTERN.search(line)
+        if match:
+            pkg, reason = match.groups()
+            if pkg == package_name and reason != 'activelaunch':
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    
+    # Format output: "broadcast x2, content provider" or just "broadcast" if count is 1
+    formatted_parts = []
+    for reason, count in reason_counts.items():
+        if count > 1:
+            formatted_parts.append(f"{reason} x{count}")
+        else:
+            formatted_parts.append(reason)
+    
+    return ", ".join(formatted_parts)
+
+
+def parse_kill_reasons(dumpstate_content: str, app_name: str) -> List[str]:
+    """
+    Lấy danh sách Kill Reasons cho specific app từ dumpstate.
+    
+    Returns: List of kill reason strings
+    """
+    if not dumpstate_content or not app_name:
+        return []
+    
+    # Get package name
+    app_lower = app_name.lower()
+    package_name = None
+    for key, pkg in APP_PACKAGE_MAPPING.items():
+        if key in app_lower:
+            package_name = pkg
+            break
+    
+    if not package_name:
+        return []
+    
+    kill_reasons = []
+    for line in dumpstate_content.split('\n'):
+        kill_match = KILL_PATTERN.search(line)
+        if kill_match:
+            # Extract package name from kill log
+            package_match = re.search(r"I am_kill : \[[^,]*,[^,]*,([^,]+),", line)
+            if package_match:
+                pkg = package_match.group(1)
+                if pkg == package_name:
+                    kill_reasons.append(kill_match.group(1))
+    
+    return kill_reasons
+
+
+def parse_compiler_type(dumpstate_content: str, app_name: str) -> str:
+    """
+    Detect Compiler type cho specific app từ dumpstate.
+    Types: speed, speed-profile, verify
+    
+    Returns: compiler type string (empty if not found)
+    """
+    if not dumpstate_content or not app_name:
+        return ""
+    
+    # Get package name
+    app_lower = app_name.lower()
+    package_name = None
+    for key, pkg in APP_PACKAGE_MAPPING.items():
+        if key in app_lower:
+            package_name = pkg
+            break
+    
+    if not package_name:
+        return ""
+    
+    # Pattern to find compiler filter for package
+    # Example: [com.sec.android.app.camera] speed-profile
+    pattern = re.compile(
+        r'\[' + re.escape(package_name) + r'\].*?(speed-profile|speed|verify)',
+        re.IGNORECASE
+    )
+    
+    match = pattern.search(dumpstate_content)
+    if match:
+        return match.group(1).lower()
+    
+    return ""
+
+
+def count_crashes(dumpstate_content: str) -> int:
+    """
+    Placeholder function: Đếm số lượng crash events trong dumpstate.
+    Patterns to detect: FATAL EXCEPTION, am_crash, am_anr
+    
+    TODO: User sẽ implement logic chi tiết sau.
+    
+    Returns: Crash count (int)
+    """
+    # Placeholder - return 0 for now
+    # User will implement detailed logic later
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Memory File Parsing Functions
+# ---------------------------------------------------------------------------
+
+def parse_memory_file(file_path: str) -> Dict[str, float]:
+    """
+    Parse memory file (*_start_*.txt hoặc *_end_*.txt) để lấy MemFree, MemAvailable.
+    Format file giống /proc/meminfo.
+    
+    Returns: Dict với keys 'MemFree', 'MemAvailable' (giá trị tính bằng MB)
+    """
+    result = {'MemFree': 0.0, 'MemAvailable': 0.0}
+    
+    if not file_path or not os.path.exists(file_path):
+        return result
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Pattern: MemFree:          143676 kB
+                match = re.match(r'^(MemFree|MemAvailable)\s*:\s*(\d+)\s*kB', line)
+                if match:
+                    key = match.group(1)
+                    value_kb = int(match.group(2))
+                    result[key] = round(value_kb / 1024.0, 2)  # Convert to MB
+                    
+                    # Early exit if both found
+                    if result['MemFree'] > 0 and result['MemAvailable'] > 0:
+                        break
+                        
+    except Exception as e:
+        print(f"[Warning] Cannot parse memory file {file_path}: {e}")
+    
+    return result
+
+
+def build_memory_file_mapping(folder_path: str, app_name: str) -> List[str]:
+    """
+    Build list of memory files (*_start_*.txt) cho app cụ thể, sorted theo timestamp.
+    Mỗi file tương ứng với một cycle (entry + reentry).
+    
+    Args:
+        folder_path: Path to folder containing memory files
+        app_name: App name to filter (e.g., 'camera', 'clock')
+        
+    Returns:
+        List of file paths sorted by timestamp (chronological order)
+    """
+    folder = Path(folder_path)
+    if not folder.exists():
+        return []
+    
+    app_lower = app_name.lower()
+    memory_files = []
+    
+    # Pattern: *_<app>_Start_*
+    pattern = re.compile(rf'.*_{app_lower}_start_', re.IGNORECASE)
+    
+    for item in folder.iterdir():
+        if item.is_file() and pattern.match(item.name.lower()):
+            memory_files.append(str(item))
+    
+    # Sort by filename (contains timestamp, so chronological order)
+    memory_files.sort()
+    
+    return memory_files
+
+
+def get_memory_data_for_cycle(folder_path: str, app_name: str, cycle_index: int) -> Dict[str, float]:
+    """
+    Lấy Memory data (MemFree, MemAvailable) cho một cycle cụ thể.
+    
+    Args:
+        folder_path: Path to folder containing memory files
+        app_name: App name
+        cycle_index: 0-based cycle index
+        
+    Returns:
+        Dict với 'MemFree', 'MemAvailable' in MB
+    """
+    memory_files = build_memory_file_mapping(folder_path, app_name)
+    
+    if cycle_index < len(memory_files):
+        return parse_memory_file(memory_files[cycle_index])
+    
+    return {'MemFree': 0.0, 'MemAvailable': 0.0}

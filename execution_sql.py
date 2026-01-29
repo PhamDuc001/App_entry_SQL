@@ -48,7 +48,17 @@ from dumpstate_parser import (
     collect_bugreport_mappings, 
     get_bugreport_for_log, 
     get_app_group,
-    get_bugreport_group_from_name
+    get_bugreport_group_from_name,
+    # New imports for extended profiling table
+    parse_uptime,
+    parse_pss_for_app,
+    parse_pageboostd_for_app,
+    parse_start_reasons,
+    parse_kill_reasons,
+    parse_compiler_type,
+    count_crashes,
+    get_memory_data_for_cycle,
+    find_dumpstate_content
 )
 
 # ---------------------------------------------------------------------------
@@ -65,9 +75,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -229,8 +239,8 @@ def _process_single_trace_worker(args):
     Worker function cho multiprocessing.
     [UPDATED] Nhận trực tiếp pid_mapping từ tham số, không dùng biến Global.
     """
-    # Unpack thêm tham số pid_mapping
-    file_path, occurrence, app_name, pid_mapping = args 
+    # Unpack thêm tham số pid_mapping và mapping_info (mapping_info dùng sau khi process)
+    file_path, occurrence, app_name, pid_mapping, mapping_info = args 
     
     filename = Path(file_path).stem
     config = TraceProcessorConfig(bin_path=TRACE_PROCESSOR_BIN)
@@ -293,24 +303,29 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
     trace_mapping = build_trace_bugreport_mapping(folder_path, extracted)
     
     # Count how many traces have valid mappings
-    valid_count = sum(1 for m in trace_mapping.values() if m)
+    valid_count = sum(1 for m in trace_mapping.values() if m and m.get('bugreport_path'))
     print(f"[{label}] Mapped {valid_count}/{len(trace_mapping)} traces to bugreports")
     
     tasks = []
     for app_name, file_list in app_groups.items():
         for file_path, occurrence in file_list:
-            # [NEW] Lấy pid_mapping từ trace_mapping đã build
-            pid_mapping = trace_mapping.get(file_path, None)
+            # [UPDATED] Extract pid_mapping and trace_mapping_info from new structure
+            mapping_info = trace_mapping.get(file_path, {})
+            pid_mapping = mapping_info.get('pid_mapping', {}) if mapping_info else {}
             
             # Convert empty dict to None for consistency
-            if pid_mapping is not None and len(pid_mapping) == 0:
+            if not pid_mapping:
                 pid_mapping = None
             
-            tasks.append((file_path, occurrence, app_name, pid_mapping))
+            # Pass full mapping_info for later use in metrics
+            tasks.append((file_path, occurrence, app_name, pid_mapping, mapping_info))
     
     print(f"[{label}] Processing {len(tasks)} trace files with {num_workers} workers...")
     
     results = defaultdict(lambda: {'entry': [None] * 100, 'reentry': [None] * 100})
+    
+    # Store mapping info separately (since multiprocessing can't easily pass back)
+    task_mapping_info = {t[0]: t[4] for t in tasks}  # file_path -> mapping_info
     
     pool = Pool(processes=num_workers)
     try:
@@ -319,6 +334,17 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
                 cycle_index = (occurrence - 1) // 2
                 while len(results[app_name][category]) <= cycle_index:
                     results[app_name][category].append(None)
+                
+                # [NEW] Add trace_mapping info to metrics for extended data access
+                trace_file = None
+                for task in tasks:
+                    if Path(task[0]).stem == filename:
+                        trace_file = task[0]
+                        break
+                
+                if trace_file:
+                    metrics['trace_file'] = trace_file
+                    metrics['trace_mapping'] = task_mapping_info.get(trace_file, {})
                 
                 results[app_name][category][cycle_index] = metrics
                 print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {filename}")
@@ -420,7 +446,9 @@ def create_excel_output(
     output_folder: str,
     header_title: str,
     dut_device_code: str,
-    ref_device_code: str
+    ref_device_code: str,
+    dut_folder_path: str = "",
+    ref_folder_path: str = ""
 ) -> None:
     """
     Tạo 2 file Excel: execution_entry.xlsx và execution_reentry.xlsx.
@@ -462,7 +490,9 @@ def create_excel_output(
                 launch_type,
                 app_name,
                 dut_device_code,
-                ref_device_code
+                ref_device_code,
+                dut_folder_path,
+                ref_folder_path
             )
         
         wb.close()
@@ -576,7 +606,9 @@ def create_sheet(
     launch_type: str,
     app_name: str,
     dut_device_code: str,
-    ref_device_code: str
+    ref_device_code: str,
+    dut_folder_path: str = "",
+    ref_folder_path: str = ""
 ) -> None:
     ws = wb.add_worksheet(sheet_name)
     
@@ -594,6 +626,18 @@ def create_sheet(
     fmt_diff_slow = wb.add_format({"num_format": "0.000", "align": "center", "bg_color": "#FFB3B3", "border": 1, "border_color": "#000000"})
     fmt_diff_fast = wb.add_format({"num_format": "0.000", "align": "center", "bg_color": "#B3FFB3", "border": 1, "border_color": "#000000"})
     fmt_diff_normal = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
+    
+    # Format for new section headers (MEMORY, LOADAPKASSETS, ABNORMAL)
+    fmt_section_header = wb.add_format({
+        "bold": True, 
+        "align": "left",
+        "bg_color": "#000000",
+        "font_color": "#FFFFFF",
+        "border": 1,
+        "border_color": "#000000"
+    })
+    fmt_section_value = wb.add_format({"align": "center", "border": 1, "border_color": "#000000"})
+    fmt_section_text = wb.add_format({"align": "left", "border": 1, "border_color": "#000000", "text_wrap": True})
     
     # Số lượng cycles
     num_dut_cycles = len(dut_cycles)
@@ -918,6 +962,202 @@ def create_sheet(
             ws.write(row_idx, diff_idx, "", fmt_val)
                     
             row_idx += 1
+
+    # =========================================================================
+    # [NEW] EXTENDED PROFILING SECTIONS
+    # =========================================================================
+    
+    # Calculate column indices (same as main table)
+    total_cols = 1 + max_cycles + 1 + max_cycles + 1 + 1  # Metric + DUT cycles + DUT Avg + REF cycles + REF Avg + Diff
+    dut_avg_col = 1 + max_cycles
+    ref_avg_col = dut_avg_col + 1 + max_cycles
+    diff_col = ref_avg_col + 1
+    
+    # ---------------------------------------------------------
+    # === MEMORY SECTION ===
+    # ---------------------------------------------------------
+    row_idx += 1  # Empty separator
+    
+    # Section header - merged across all columns
+    ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "MEMORY", fmt_section_header)
+    row_idx += 1
+    
+    # Memory metrics: MemFree, MemAvailable, App PSS, Pageboostd
+    memory_metrics = ["MemFree (MB)", "MemAvailable (MB)", "App PSS (MB)", "Pageboostd (MB)"]
+    
+    for metric in memory_metrics:
+        ws.write(row_idx, 0, metric, fmt_label)
+        
+        dut_values = []
+        ref_values = []
+        
+        for i in range(max_cycles):
+            # Get memory data for DUT
+            if i < num_dut_cycles and dut_folder_path:
+                mem_data = get_memory_data_for_cycle(dut_folder_path, app_name, i)
+                # Get dumpstate content for PSS and Pageboostd
+                # Use dut_cycles directly (not adjusted) to ensure trace_mapping is available
+                dut_cycle = dut_cycles[i] if i < len(dut_cycles) else None
+                dumpstate_content = None
+                if dut_cycle:
+                    trace_mapping_info = dut_cycle.get('trace_mapping', {})
+                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                    if bugreport_path:
+                        dumpstate_content = find_dumpstate_content(bugreport_path)
+                
+                if "MemFree" in metric:
+                    val = mem_data.get('MemFree', 0.0)
+                elif "MemAvailable" in metric:
+                    val = mem_data.get('MemAvailable', 0.0)
+                elif "App PSS" in metric and dumpstate_content:
+                    val = parse_pss_for_app(dumpstate_content, app_name)
+                elif "Pageboostd" in metric and dumpstate_content:
+                    val = parse_pageboostd_for_app(dumpstate_content, app_name)
+                else:
+                    val = 0.0
+                    
+                ws.write(row_idx, 1 + i, val if val > 0 else "", fmt_section_value)
+                if val > 0:
+                    dut_values.append(val)
+            else:
+                ws.write(row_idx, 1 + i, "", fmt_section_value)
+            
+            # Get memory data for REF
+            if i < num_ref_cycles and ref_folder_path:
+                mem_data = get_memory_data_for_cycle(ref_folder_path, app_name, i)
+                # Use ref_cycles directly (not adjusted) to ensure trace_mapping is available
+                ref_cycle = ref_cycles[i] if i < len(ref_cycles) else None
+                dumpstate_content = None
+                if ref_cycle:
+                    trace_mapping_info = ref_cycle.get('trace_mapping', {})
+                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                    if bugreport_path:
+                        dumpstate_content = find_dumpstate_content(bugreport_path)
+                
+                if "MemFree" in metric:
+                    val = mem_data.get('MemFree', 0.0)
+                elif "MemAvailable" in metric:
+                    val = mem_data.get('MemAvailable', 0.0)
+                elif "App PSS" in metric and dumpstate_content:
+                    val = parse_pss_for_app(dumpstate_content, app_name)
+                elif "Pageboostd" in metric and dumpstate_content:
+                    val = parse_pageboostd_for_app(dumpstate_content, app_name)
+                else:
+                    val = 0.0
+                    
+                ws.write(row_idx, dut_avg_col + 1 + i, val if val > 0 else "", fmt_section_value)
+                if val > 0:
+                    ref_values.append(val)
+            else:
+                ws.write(row_idx, dut_avg_col + 1 + i, "", fmt_section_value)
+        
+        # Calculate and write averages
+        dut_avg = sum(dut_values) / len(dut_values) if dut_values else 0.0
+        ref_avg = sum(ref_values) / len(ref_values) if ref_values else 0.0
+        
+        ws.write(row_idx, dut_avg_col, dut_avg if dut_avg > 0 else "", fmt_val)
+        ws.write(row_idx, ref_avg_col, ref_avg if ref_avg > 0 else "", fmt_val)
+        
+        # Diff calculation
+        if dut_avg > 0 and ref_avg > 0:
+            diff = dut_avg - ref_avg
+            # For memory, higher is better for Free/Available, so positive diff is good
+            if "Free" in metric or "Available" in metric:
+                fmt_diff = fmt_diff_fast if diff > 0 else (fmt_diff_slow if diff < 0 else fmt_diff_normal)
+            else:
+                fmt_diff = fmt_diff_slow if diff > 0 else (fmt_diff_fast if diff < 0 else fmt_diff_normal)
+            ws.write(row_idx, diff_col, diff, fmt_diff)
+        else:
+            ws.write(row_idx, diff_col, "", fmt_val)
+        
+        row_idx += 1
+    
+    # ---------------------------------------------------------
+    # === LOADAPKASSETS SECTION (Placeholder) ===
+    # ---------------------------------------------------------
+    row_idx += 1  # Empty separator
+    
+    ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "LOADAPKASSETS", fmt_section_header)
+    row_idx += 1
+    
+    # Placeholder rows - to be implemented by user
+    loadapk_categories = ["system_server", "system_ui", "launching_app"]
+    for category in loadapk_categories:
+        ws.write(row_idx, 0, category, fmt_label)
+        # Fill empty cells with borders
+        for col in range(1, total_cols):
+            ws.write(row_idx, col, "", fmt_section_value)
+        row_idx += 1
+    
+    # ---------------------------------------------------------
+    # === ABNORMAL SECTION ===
+    # ---------------------------------------------------------
+    row_idx += 1  # Empty separator
+    
+    ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "ABNORMAL", fmt_section_header)
+    row_idx += 1
+    
+    # Abnormal metrics: Uptime, Start reason, Kill reason, Crash count, Compiler
+    abnormal_rows = ["Uptime (minute)", "Start reason", "Kill reason", "Crash count", "Compiler"]
+    
+    for metric in abnormal_rows:
+        ws.write(row_idx, 0, metric, fmt_label)
+        
+        for i in range(max_cycles):
+            # Get DUT abnormal data
+            dut_val = ""
+            if i < len(dut_cycles):
+                dut_cycle = dut_cycles[i]
+                if dut_cycle:
+                    trace_mapping_info = dut_cycle.get('trace_mapping', {})
+                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                    if bugreport_path:
+                        dumpstate_content = find_dumpstate_content(bugreport_path)
+                        if dumpstate_content:
+                            if "Uptime" in metric:
+                                dut_val = parse_uptime(dumpstate_content)
+                            elif metric == "Start reason":
+                                dut_val = parse_start_reasons(dumpstate_content, app_name)
+                            elif metric == "Kill reason":
+                                reasons = parse_kill_reasons(dumpstate_content, app_name)
+                                dut_val = ", ".join(reasons) if reasons else ""
+                            elif metric == "Crash count":
+                                dut_val = count_crashes(dumpstate_content)
+                            elif metric == "Compiler":
+                                dut_val = parse_compiler_type(dumpstate_content, app_name)
+            
+            ws.write(row_idx, 1 + i, dut_val, fmt_section_text if isinstance(dut_val, str) else fmt_section_value)
+            
+            # Get REF abnormal data
+            ref_val = ""
+            if i < len(ref_cycles):
+                ref_cycle = ref_cycles[i]
+                if ref_cycle:
+                    trace_mapping_info = ref_cycle.get('trace_mapping', {})
+                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                    if bugreport_path:
+                        dumpstate_content = find_dumpstate_content(bugreport_path)
+                        if dumpstate_content:
+                            if "Uptime" in metric:
+                                ref_val = parse_uptime(dumpstate_content)
+                            elif metric == "Start reason":
+                                ref_val = parse_start_reasons(dumpstate_content, app_name)
+                            elif metric == "Kill reason":
+                                reasons = parse_kill_reasons(dumpstate_content, app_name)
+                                ref_val = ", ".join(reasons) if reasons else ""
+                            elif metric == "Crash count":
+                                ref_val = count_crashes(dumpstate_content)
+                            elif metric == "Compiler":
+                                ref_val = parse_compiler_type(dumpstate_content, app_name)
+            
+            ws.write(row_idx, dut_avg_col + 1 + i, ref_val, fmt_section_text if isinstance(ref_val, str) else fmt_section_value)
+        
+        # Avg and Diff are mostly N/A for text fields
+        ws.write(row_idx, dut_avg_col, "", fmt_val)
+        ws.write(row_idx, ref_avg_col, "", fmt_val)
+        ws.write(row_idx, diff_col, "", fmt_val)
+        
+        row_idx += 1
 
     # ---------------------------------------------------------
     # === Abnormal Process & Background Activity Table ===
@@ -1686,7 +1926,7 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     # Create Excel outputs
     print("\n[3/3] Creating Excel files...")
     output_folder = dut_folder  # Lưu vào thư mục DUT
-    create_excel_output(dut_results, ref_results, output_folder, header_title, dut_device_code, ref_device_code)
+    create_excel_output(dut_results, ref_results, output_folder, header_title, dut_device_code, ref_device_code, dut_folder, ref_folder)
     
     end_time = datetime.datetime.now()
     elapsed = (end_time - start_time).total_seconds()
