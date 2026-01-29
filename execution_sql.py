@@ -65,9 +65,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -643,8 +643,8 @@ def create_sheet(
         adjusted_ref_cycles.append(adj_ref)
     
     # Replace cycles với adjusted versions
-    dut_cycles = [c for c in adjusted_dut_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_dut_cycles if c is not None]))
-    ref_cycles = [c for c in adjusted_ref_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_ref_cycles if c is not None]))
+    # dut_cycles = [c for c in adjusted_dut_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_dut_cycles if c is not None]))
+    # ref_cycles = [c for c in adjusted_ref_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_ref_cycles if c is not None]))
     
     # Rebuild lists to maintain original length
     dut_cycles = adjusted_dut_cycles
@@ -676,7 +676,8 @@ def create_sheet(
     col_idx = 1
     
     def get_cycle_title(idx, cycle_list):
-        if idx < len(cycle_list):
+        # [FIX] Thêm điều kiện kiểm tra cycle_list[idx] is not None
+        if idx < len(cycle_list) and cycle_list[idx] is not None:
             l_type = cycle_list[idx].get("Launch Type", "Unknown")
             return f"{idx + 1} ({l_type})"
         return f"{idx + 1}"
@@ -825,7 +826,7 @@ def create_sheet(
     # --- Thu thập dữ liệu DUT ---
     for i in range(max_cycles):
         procs = []
-        if i < len(dut_cycles):
+        if i < len(dut_cycles) and dut_cycles[i] is not None:
             # Lấy data từ 2 nguồn: Abnormal & Background
             abnormal = dut_cycles[i].get("Abnormal_Process_Data", [])
             bg = dut_cycles[i].get("Background_Process_States", [])
@@ -851,7 +852,7 @@ def create_sheet(
     # --- Thu thập dữ liệu REF ---
     for i in range(max_cycles):
         procs = []
-        if i < len(ref_cycles):
+        if i < len(ref_cycles) and ref_cycles[i] is not None:
             abnormal = ref_cycles[i].get("Abnormal_Process_Data", [])
             bg = ref_cycles[i].get("Background_Process_States", [])
             
@@ -955,7 +956,7 @@ def create_sheet(
     for i in range(max_cycles_abnormal):
         # 1. Thu thập & Gộp danh sách tên Process cho DUT
         dut_names_set = set()
-        if i < len(dut_cycles):
+        if i < len(dut_cycles) and dut_cycles[i] is not None:
             # Nguồn 1: Abnormal (bindApplication)
             abnormal_data = dut_cycles[i].get("Abnormal_Process_Data", [])
             for p in abnormal_data:
@@ -971,7 +972,7 @@ def create_sheet(
 
         # 2. Thu thập & Gộp danh sách tên Process cho REF
         ref_names_set = set()
-        if i < len(ref_cycles):
+        if i < len(ref_cycles) and ref_cycles[i] is not None:
             # Nguồn 1: Abnormal
             abnormal_data = ref_cycles[i].get("Abnormal_Process_Data", [])
             for p in abnormal_data:
@@ -1023,10 +1024,10 @@ def create_sheet(
     row_idx += 3
 
     # Load Data
-    all_dut_proc = [cycle.get("CPU_Process_Data", []) for cycle in dut_cycles]
-    all_ref_proc = [cycle.get("CPU_Process_Data", []) for cycle in ref_cycles]
-    all_dut_thread = [cycle.get("CPU_Thread_Data", []) for cycle in dut_cycles]
-    all_ref_thread = [cycle.get("CPU_Thread_Data", []) for cycle in ref_cycles]
+    all_dut_proc = [cycle.get("CPU_Process_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_proc = [cycle.get("CPU_Process_Data", []) if cycle else [] for cycle in ref_cycles]
+    all_dut_thread = [cycle.get("CPU_Thread_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_thread = [cycle.get("CPU_Thread_Data", []) if cycle else [] for cycle in ref_cycles]
 
     # Formats
     fmt_cpu_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFE4B5", "border": 1})
@@ -1231,8 +1232,8 @@ def create_sheet(
     fmt_blockio_val = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
     
     # Thu thập Block I/O data từ tất cả cycles
-    all_dut_block_io = [cycle.get("Block_IO_Data", []) for cycle in dut_cycles]
-    all_ref_block_io = [cycle.get("Block_IO_Data", []) for cycle in ref_cycles]
+    all_dut_block_io = [cycle.get("Block_IO_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_block_io = [cycle.get("Block_IO_Data", []) if cycle else [] for cycle in ref_cycles]
     
     # Lấy danh sách tất cả library names xuất hiện
     all_library_names = set()
@@ -1364,8 +1365,8 @@ def create_sheet(
     row_idx += 3
 
     # Thu thập LoadApkAsset data từ tất cả cycles
-    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", []) for cycle in dut_cycles]
-    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", []) for cycle in ref_cycles]
+    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", []) if cycle else [] for cycle in ref_cycles]
 
     # Tạo union set của tất cả LoadApkAsset names
     all_loadapk_names = set()
@@ -1478,9 +1479,9 @@ def create_sheet(
     row_idx += 3
     
     # Thu thập Binder Transaction data từ tất cả cycles
-    all_dut_binder = [cycle.get("Binder_Transaction_Data", {}) for cycle in dut_cycles]
+    all_dut_binder = [cycle.get("Binder_Transaction_Data", {}) if cycle else {} for cycle in dut_cycles]
     # print("all_dut_binder", all_dut_binder)
-    all_ref_binder = [cycle.get("Binder_Transaction_Data", {}) for cycle in ref_cycles]
+    all_ref_binder = [cycle.get("Binder_Transaction_Data", {}) if cycle else {} for cycle in ref_cycles]
     
     # Format cho Statistics table
     fmt_stats_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#E6E6FA", "border": 1, "border_color": "#000000"})
@@ -1637,7 +1638,7 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         target_apps: Danh sách apps cần xử lý (optional)
         extracted: True nếu các Bugreport đã được giải nén thành folder
     """
-    num_workers = min(cpu_count(), 8)
+    num_workers = min(cpu_count(), 16)
     
     if not os.path.exists(dut_folder):
         raise FileNotFoundError(f"DUT folder not found: {dut_folder}")
@@ -1710,7 +1711,7 @@ def main():
     args = parser.parse_args()
     
     try:
-        run_analysis(args.dut_folder, args.ref_folder, extracted=args.extracted)
+        run_analysis(args.dut_folder, args.ref_folder, extracted=True)
     except Exception as e:
         print(f"\n[ERROR] Analysis failed: {e}")
         traceback.print_exc()
