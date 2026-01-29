@@ -86,7 +86,7 @@ TARGET_APPS = [
 def analyze_reaction_trace(tp: TraceProcessor, trace_path: str) -> Dict[str, Any]:
     """
     Phân tích Reaction Time Sequence:
-    Touch -> AddStartingWindow -> Choreographer -> onTransactionReady
+    Touch -> AddStartingWindow -> Choreographer -> startAnimation
     """
     metrics: Dict[str, Any] = {}
     
@@ -133,11 +133,8 @@ def analyze_reaction_trace(tp: TraceProcessor, trace_path: str) -> Dict[str, Any
         print(f"    [WARN] Không tìm thấy SystemUI PID trong trace: {trace_path}")
         pass
 
-
-
-
-    # [onTransactionReady] (System Server)
-    otr_info = get_onTransactionReady(tp)
+    # [startAnimation] (System Server)
+    otr_info = get_onTransactionReady(tp)     # get startAnimation
     otr_ts, otr_dur, otr_end = otr_info if otr_info else (None, None, None)
 
     # [drawFrame] - Empty for now
@@ -171,16 +168,16 @@ def analyze_reaction_trace(tp: TraceProcessor, trace_path: str) -> Dict[str, Any
     # --- Choreographer Duration ---
     metrics["Choreographer"] = to_ms(cho_dur)
 
-    # --- Choreographer ~ onTransactionReady ---
-    if cho_ts and otr_ts and otr_ts > cho_ts:
-        metrics["Choreographer ~ onTransactionReady"] = to_ms(otr_ts - cho_ts)
+    # --- Choreographer ~ startAnimation ---
+    if cho_end and otr_ts and otr_ts > cho_end:
+        metrics["Choreographer ~ startAnimation"] = to_ms(otr_ts - cho_end)
     else:
-        metrics["Choreographer ~ onTransactionReady"] = 0.0
+        metrics["Choreographer ~ startAnimation"] = 0.0
 
-    # --- onTransactionReady Duration ---
-    metrics["onTransactionReady"] = to_ms(otr_dur)
+    # --- startAnimation Duration ---
+    metrics["startAnimation"] = to_ms(otr_dur)
 
-    # --- onTransactionReady ~ drawFrame ---
+    # --- startAnimation ~ drawFrame ---
     if launcher_pid:
         drawFrame = get_drawFrame(tp, launcher_pid)
 
@@ -188,10 +185,10 @@ def analyze_reaction_trace(tp: TraceProcessor, trace_path: str) -> Dict[str, Any
     if drawFrame is not None:
         df_ts, df_dur, df_end = drawFrame
         metrics["drawFrame"] = to_ms(df_dur)
-        metrics["onTransactionReady ~ drawFrame"] = to_ms(df_ts - otr_end)
+        metrics["startAnimation ~ drawFrame"] = to_ms(df_ts - otr_end)
     else:
         metrics["drawFrame"] = "" 
-        metrics["onTransactionReady ~ drawFrame"] = ""
+        metrics["startAnimation ~ drawFrame"] = ""
 
     # --- App Reaction Time --- 
     if touch_down_ts and df_end is not None:
@@ -396,9 +393,9 @@ def create_excel_output(
                 ("AddStartingWindow", "AddStartingWindow"),
                 ("~", "AddStartingWindow ~ Choreographer"),
                 ("Choreographer", "Choreographer"),
-                ("~", "Choreographer ~ onTransactionReady"),
-                ("onTransactionReady", "onTransactionReady"),
-                ("~", "onTransactionReady ~ drawFrame"),
+                ("~", "Choreographer ~ startAnimation"),
+                ("startAnimation", "startAnimation"),
+                ("~", "startAnimation ~ drawFrame"),
                 ("drawFrame", "drawFrame"),
             ]
             
@@ -435,7 +432,11 @@ def create_excel_output(
                     col_idx += 1
                 
                 # DUT Avg
-                dut_avg = sum(dut_values) / len(dut_values) if dut_values else 0.0
+                valid_dut = [v for v in dut_values if v > 0]
+                if valid_dut:
+                    dut_avg = sum(valid_dut) / len(valid_dut)
+                else:
+                    dut_avg = 0.0
                 write_value_or_empty(ws, row_idx, col_idx, dut_avg, fmt_val)
                 col_idx += 1
                 
@@ -453,7 +454,11 @@ def create_excel_output(
                     col_idx += 1
                 
                 # REF Avg
-                ref_avg = sum(ref_values) / len(ref_values) if ref_values else 0.0
+                valid_ref = [v for v in ref_values if v > 0]
+                if valid_ref:
+                    ref_avg = sum(valid_ref) / len(valid_ref)
+                else:
+                    ref_avg = 0.0
                 write_value_or_empty(ws, row_idx, col_idx, ref_avg, fmt_val)
                 col_idx += 1
                 

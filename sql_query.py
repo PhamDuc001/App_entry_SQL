@@ -298,13 +298,13 @@ def get_binder_transaction(tp: TraceProcessor, app_tid: int, end_ts: int):
 # -------------------------------------------------------------------
 def get_onTransactionReady(tp: TraceProcessor) -> Optional[Tuple[int, int, int]]:
     """
-    Get 'onTransactionReady' trong system_server.
+    Get 'startAnimation' trong system_server.
     Return: (start_time, dur_time, end_time)
     """
     sql = f"""
     SELECT ts, dur, (ts + dur) as end_ts
     FROM slice_with_names
-    WHERE name = 'onTransactionReady';
+    WHERE name like 'AIDL%startAnimation%';
     """
     df = query_df(tp, sql)
     if df is None:
