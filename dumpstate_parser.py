@@ -457,6 +457,8 @@ PAGEBOOSTD_APP_MAPPING = {
 # Pre-compiled regex patterns for process start/kill parsing
 PROC_START_PATTERN = re.compile(r"I am_proc_start: \[.*?,.*?,.*?,(.*?),(.*?),")
 KILL_PATTERN = re.compile(r"I am_kill : \[[^,]*,[^,]*,[^,]*,[^,]*,([^,]+),[^\]]*\]")
+APP_TRANSITION_PATTERN = re.compile(r"I am_app_transition: \[(.*?),(?:.*?,){5}.*?\]")
+
 
 def parse_uptime(dumpstate_content: str) -> int:
     """
@@ -486,7 +488,7 @@ def parse_pss_for_app(dumpstate_content: str, app_name: str) -> float:
     if not dumpstate_content or not app_name:
         return 0.0
     
-    # Get package name for app
+    # Get package name
     app_lower = app_name.lower()
     package_name = None
     for key, pkg in APP_PACKAGE_MAPPING.items():
@@ -507,7 +509,7 @@ def parse_pss_for_app(dumpstate_content: str, app_name: str) -> float:
     
     end_idx = dumpstate_content.find(end_marker, start_idx)
     if end_idx == -1:
-        section = dumpstate_content[start_idx:start_idx + 50000]
+        section = dumpstate_content[start_idx:] # Read till end if no OOM adjustment marker
     else:
         section = dumpstate_content[start_idx:end_idx]
     
@@ -515,13 +517,13 @@ def parse_pss_for_app(dumpstate_content: str, app_name: str) -> float:
     pattern = r'^\s*([\d,]+)K:\s+' + re.escape(package_name) + r'\s+'
     
     for line in section.split('\n'):
-        match = re.match(pattern, line)
+        match = re.search(pattern, line)
         if match:
             try:
                 pss_kb = int(match.group(1).replace(',', ''))
                 return round(pss_kb / 1024.0, 2)  # Convert to MB
             except ValueError:
-                continue
+                pass
     
     return 0.0
 
@@ -569,6 +571,9 @@ KILL_PATTERN = re.compile(r"I am_kill : \[[^,]*,[^,]*,[^,]*,[^,]*,([^,]+),[^\]]*
 def parse_start_reasons(dumpstate_content: str, app_name: str) -> str:
     """
     Lấy Start Reasons cho specific app từ dumpstate.
+    Logic matching app_start_kill_analyzer.py:
+    - Count occurrences
+    - Stop at first am_app_transition for this app
     
     Returns: Formatted string with counts, e.g., "broadcast x2, content provider"
     """
@@ -588,7 +593,16 @@ def parse_start_reasons(dumpstate_content: str, app_name: str) -> str:
     
     # Count occurrences of each reason
     reason_counts = {}
+    found_transition = False
+    
     for line in dumpstate_content.split('\n'):
+        # Check transition first - stop if found
+        trans_match = APP_TRANSITION_PATTERN.search(line)
+        if trans_match and trans_match.group(1) == package_name:
+            found_transition = True
+            break
+            
+        # Check start reason
         match = PROC_START_PATTERN.search(line)
         if match:
             pkg, reason = match.groups()
