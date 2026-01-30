@@ -591,8 +591,8 @@ def parse_start_reasons(dumpstate_content: str, app_name: str) -> str:
     if not package_name:
         return ""
     
-    # Count occurrences of each reason
-    reason_counts = {}
+    # Collect reasons in order (matching app_start_kill_analyzer.py logic)
+    reasons = []
     found_transition = False
     
     for line in dumpstate_content.split('\n'):
@@ -607,17 +607,9 @@ def parse_start_reasons(dumpstate_content: str, app_name: str) -> str:
         if match:
             pkg, reason = match.groups()
             if pkg == package_name and reason != 'activelaunch':
-                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                reasons.append(reason)
     
-    # Format output: "broadcast x2, content provider" or just "broadcast" if count is 1
-    formatted_parts = []
-    for reason, count in reason_counts.items():
-        if count > 1:
-            formatted_parts.append(f"{reason} x{count}")
-        else:
-            formatted_parts.append(reason)
-    
-    return ", ".join(formatted_parts)
+    return ", ".join(reasons)
 
 
 def parse_kill_reasons(dumpstate_content: str, app_name: str) -> List[str]:

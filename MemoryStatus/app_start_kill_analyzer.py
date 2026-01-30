@@ -103,13 +103,19 @@ class AppStartKillAnalyzer:
         # Initialize app info
         app_info = AppStartKillInfo(app_name=target_app)
         
-
+        # Track if we've found the first app transition
+        found_first_transition = False
         
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
-                    # Removed check for app transition to allow counting multiple starts
-
+                    # Check for app transition (first occurrence for target app)
+                    if not found_first_transition:
+                        transition_match = APP_TRANSITION_PATTERN.search(line)
+                        if transition_match and transition_match.group(1) == target_package:
+                            found_first_transition = True
+                            # Stop processing after finding the first transition
+                            break
                     
                     # Check for process start events
                     start_match = PROC_START_PATTERN.search(line)
