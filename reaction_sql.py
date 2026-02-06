@@ -34,9 +34,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #==============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -99,7 +99,7 @@ def analyze_reaction_trace(tp: TraceProcessor, trace_path: str) -> Dict[str, Any
         pass
 
     # App Process Info
-    app_proc = find_app_process(tp, app_pkg) if app_pkg else None
+    app_proc = find_app_process(tp)
     app_upid = app_proc[0] if app_proc else None
 
     # 3. Get Event Timestamps

@@ -145,7 +145,7 @@ def detect_app_from_launch(tp: TraceProcessor) -> Optional[str]:
     name = str(row['name'])
     return name.split("launching:", 1)[1].strip() if "launching:" in name else None
 
-def find_app_process(tp: TraceProcessor, app_pkg: str) -> Optional[Tuple[int, int, str, int]]:
+def find_app_process(tp: TraceProcessor) -> Optional[Tuple[int, int, str, int]]:
     """Tìm process chính của app dựa vào activityStart/Resume."""
     # Logic: Tìm process có activityStart hoặc activityResume
     sql = """
@@ -579,35 +579,118 @@ def process_block_io_data(df) -> List[Dict[str, Any]]:
         })
     result.sort(key=lambda x: x['timeTotal'], reverse=True)
     return result[:10]
+# ===========================LoadApkAsset Query ==============================
+
+def get_system_pids(tp: TraceProcessor) -> Dict[str, int]:
+    """
+    Lấy PID system_server và systemui.
+    [FIX] Tìm qua bảng Thread vì bảng Process bị thiếu name.
+    """
+    pids = {'system_server': None, 'system_ui': None}
+    
+    # 1. Tìm System Server (Main thread name = 'system_server')
+    sql_ss = """
+    SELECT p.pid 
+    FROM process p
+    JOIN thread t ON p.upid = t.upid
+    WHERE t.name = 'system_server' 
+    AND t.is_main_thread = 1
+    LIMIT 1;
+    """
+    df_ss = query_df(tp, sql_ss)
+    if df_ss is not None and not df_ss.empty:
+        pids['system_server'] = int(df_ss.iloc[0]['pid'])
+        
+    # 2. Tìm System UI (Main thread name like ...)
+    sql_ui = """
+    SELECT p.pid 
+    FROM process p
+    JOIN thread t ON p.upid = t.upid
+    WHERE t.name LIKE '%ndroid.systemui%' 
+    AND t.is_main_thread = 1
+    LIMIT 1;
+    """
+    df_ui = query_df(tp, sql_ui)
+    if df_ui is not None and not df_ui.empty:
+        pids['system_ui'] = int(df_ui.iloc[0]['pid'])
+        
+    return pids
 
 def get_loadApkAsset(tp: TraceProcessor, app_pids: List[int], start_time: int, end_time: int):
-    """Lấy danh sách LoadApkAssets > 50ms."""
-    if not app_pids:
-        return None
-    pids_str = ','.join(map(str, app_pids))
+    """
+    Lấy danh sách LoadApkAssets > 50ms.
+    [FIX] Bỏ điều kiện lọc PID trong SQL để lấy toàn bộ dữ liệu thô (tránh sót do PID sai).
+    Việc lọc sẽ thực hiện bằng Python sau.
+    """
     sql = f"""
-        SELECT slice.name, slice.dur
+        SELECT 
+            slice.name, 
+            slice.dur,
+            process.pid,
+            thread.name as thread_name
         FROM slice 
         JOIN thread_track ON slice.track_id = thread_track.id 
         JOIN thread USING (utid) 
         JOIN process USING (upid)
         WHERE slice.name LIKE 'LoadApkAssets%' 
-        AND slice.dur/1e6 > 50 
-        AND slice.ts > {start_time} AND slice.ts < {end_time}
-        AND process.pid IN ({pids_str})
+        AND slice.dur > 50000000 -- > 50ms (ns)
+        AND slice.ts >= {start_time} 
+        AND slice.ts <= {end_time}
         ORDER BY slice.ts;
     """
     return query_df(tp, sql)
 
-def process_loadapk_data(df) -> List[Dict[str, Any]]:
+def process_loadapk_data(df, app_pid: int, sys_pids: Dict[str, int]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Phân loại data LoadApkAssets vào các nhóm: system_server, system_ui, launching_app.
+    """
+    result = {
+        'system_server': [],
+        'system_ui': [],
+        'launching_app': []
+    }
+    
     if df is None or df.empty:
-        return []
-    result = []
+        return result
+        
+    ss_pid = sys_pids.get('system_server')
+    ui_pid = sys_pids.get('system_ui')
+    
     for _, row in df.iterrows():
-        result.append({
+        try:
+            pid = int(row['pid'])
+        except:
+            continue
+            
+        dur_ms = row['dur'] / 1000000.0
+        item = {
             'name': str(row['name']),
-            'dur_ms': row['dur'] / 1000000.0
-        })
+            'dur_ms': dur_ms
+        }
+        
+        # Logic phân loại (Ưu tiên PID, fallback sang Thread Name)
+        matched = False
+        
+        if pid == app_pid:
+            result['launching_app'].append(item)
+            matched = True
+        elif ss_pid and pid == ss_pid:
+            result['system_server'].append(item)
+            matched = True
+        elif ui_pid and pid == ui_pid:
+            result['system_ui'].append(item)
+            matched = True
+            
+        # Fallback nếu PID mapping fail
+        if not matched:
+            t_name = str(row.get('thread_name', '')).lower()
+            if 'system_server' in t_name:
+                result['system_server'].append(item)
+            elif 'systemui' in t_name:
+                result['system_ui'].append(item)
+            elif str(app_pid) in t_name: # Hiếm khi xảy ra
+                result['launching_app'].append(item)
+            
     return result
 # ==============================================================
 # ==============Get top CPU by Process and Thread===============
@@ -939,77 +1022,54 @@ def get_background_process_states(tp: TraceProcessor, start_ts: int, end_ts: int
 
     return results
 
-# ====================================
-# ======Abnormal process state========
-# ====================================
-
-# def get_background_process_states(tp: TraceProcessor, start_ts: int, end_ts: int) -> List[Dict[str, Any]]:
-#     """
-#     Lấy thông tin State (Running, Runnable, Sleeping...) của các background process cụ thể
-#     trong khoảng thời gian từ start_ts đến end_ts.
+# ==========================Priority static =========================
+def get_priority_distribution(tp: TraceProcessor, tid: int, start_ts: int, end_ts: int) -> Dict[int, float]:
+    """
+    Tính thống kê Priority của thread (TID) trong khoảng thời gian [start_ts, end_ts].
+    Sử dụng SPAN_JOIN để cắt chính xác các sched_slice nằm trong khung giờ này.
     
-#     [UPDATED] Fix lỗi process.name bị Null: 
-#     Sử dụng COALESCE(p.name, t.name) để lấy tên process từ main thread nếu bảng process thiếu tên.
-#     """
-#     if not start_ts or not end_ts or start_ts >= end_ts:
-#         return []
-
-#     duration = end_ts - start_ts
-
-#     # Danh sách các pattern tên process cần tìm
-#     target_patterns = [
-#         '%gms.persistent%', 
-#         '%googlequicksearchbox%', 
-#         '%com.google.android.play%',
-#         '%.apps.messaging%'
-#     ]
+    Returns: Dict {priority (int): duration_ms (float)}
+    """
+    if not tid or not start_ts or not end_ts or start_ts >= end_ts:
+        return {}
     
-#     # [FIX] Tạo câu điều kiện kiểm tra trên cả p.name và t.name
-#     # COALESCE(p.name, t.name) sẽ trả về p.name nếu có, nếu không trả về t.name
-#     or_clauses = " OR ".join([f"COALESCE(p.name, t.name) LIKE '{pat}'" for pat in target_patterns])
-
-#     # 1. Tìm Main Thread ID (tid) của các process này
-#     sql_find_tid = f"""
-#     SELECT 
-#         COALESCE(p.name, t.name) AS proc_name,
-#         t.tid
-#     FROM process p
-#     JOIN thread t ON p.upid = t.upid
-#     WHERE t.is_main_thread = 1
-#       AND ({or_clauses});
-#     """
+    duration = end_ts - start_ts
     
-#     df_procs = query_df(tp, sql_find_tid)
+    # 1. Tạo View Interval
+    tp.query(f"DROP VIEW IF EXISTS span_interval; CREATE VIEW span_interval AS SELECT {start_ts} as ts, {duration} as dur;")
     
-#     # Debug: In ra nếu tìm thấy process để kiểm tra
-#     # if df_procs is not None and not df_procs.empty:
-#     #     print(f"  [DEBUG] Found background processes: {df_procs['proc_name'].tolist()}")
-
-#     if df_procs is None or df_procs.empty:
-#         return []
-
-#     results = []
+    # 2. Tạo View Sched Slice của Thread đó
+    # Cần tìm utid từ tid trước
+    tp.query(f"DROP VIEW IF EXISTS target_thread_sched; CREATE VIEW target_thread_sched AS SELECT s.ts, s.dur, s.priority FROM sched_slice s JOIN thread t ON s.utid = t.utid WHERE t.tid = {tid};")
     
-#     # 2. Lặp qua từng process tìm được và tính toán State summary
-#     for _, row in df_procs.iterrows():
-#         proc_name = str(row['proc_name'])
-#         tid = int(row['tid'])
-        
-#         # Tái sử dụng hàm get_thread_state_summary đã có trong sql_query.py
-#         states = get_thread_state_summary(tp, tid, start_ts, duration)
-        
-#         runnable = states.get("R", 0.0) + states.get("R+", 0.0)
-        
-#         item = {
-#             "Thread name": proc_name,
-#             "Sleeping": states.get("S", 0.0),             
-#             "Runnable": runnable,                         
-#             "Running": states.get("Running", 0.0),        
-#             "Uninterruptible Sleep": states.get("D", 0.0) 
-#         }
-#         results.append(item)
+    # 3. Span Join để lấy intersection
+    tp.query("DROP TABLE IF EXISTS prio_span_result; CREATE VIRTUAL TABLE prio_span_result USING SPAN_JOIN(span_interval, target_thread_sched);")
+    
+    # 4. Group by Priority và Sum duration
+    sql = """
+    SELECT 
+        priority,
+        SUM(dur) as total_dur
+    FROM prio_span_result
+    GROUP BY priority
+    ORDER BY total_dur DESC;
+    """
+    
+    df = query_df(tp, sql)
+    
+    # Cleanup
+    tp.query("DROP TABLE IF EXISTS prio_span_result; DROP VIEW IF EXISTS target_thread_sched; DROP VIEW IF EXISTS span_interval;")
+    
+    result = {}
+    if df is not None and not df.empty:
+        for _, row in df.iterrows():
+            prio = int(row['priority'])
+            dur_ms = float(row['total_dur']) / 1e6 # Convert ns to ms
+            result[prio] = dur_ms
+            
+    return result
 
-#     return results
+
 
 # -------------------------------------------------------------------
 # 5. MAIN ANALYSIS LOGIC
@@ -1048,18 +1108,21 @@ def _query_end_ts_dependent_data(
     block_io_df = top_block_IO(tp, app_pid, safe_start_time, safe_end_time)
     data["Block_IO_Data"] = process_block_io_data(block_io_df)
     
-    # [LoadApkAssets]
-    load_apk_pids = get_pid_list(tp)
-    if not load_apk_pids:
-        load_apk_pids = [app_pid]
-    if app_pid not in load_apk_pids:
-        load_apk_pids.append(app_pid)
-    loadapk_df = get_loadApkAsset(tp, load_apk_pids, touch_down_ts, end_ts if end_ts else 0)
-    data["LoadApkAsset_Data"] = process_loadapk_data(loadapk_df)
+    # [LoadApkAssets Logic]
+    # 1. Lấy PID chính xác của System
+    sys_pids = get_system_pids(tp)
+    # 2. Tạo list PID cần query (App + SS + UI)
+    query_pids = [app_pid]
+    if sys_pids['system_server']: query_pids.append(sys_pids['system_server'])
+    if sys_pids['system_ui']: query_pids.append(sys_pids['system_ui'])
+    # 3. Query
+    loadapk_df = get_loadApkAsset(tp, query_pids, touch_down_ts, end_ts if end_ts else 0)
+    # 4. Process & Categorize
+    # Kết quả trả về dạng Dict {category: list} thay vì list phẳng
+    data["LoadApkAsset_Data"] = process_loadapk_data(loadapk_df, app_pid, sys_pids)
     
     # [CPU Usage]
     cpu_cores = [0, 1, 2, 3, 4, 5, 6, 7]
-    
     # 1. Get Top Process
     cpu_proc_df = get_top_cpu_usage_process(tp, touch_down_ts, dur_time, cpu_cores)
     data["CPU_Process_Data"] = process_cpu_data_process(cpu_proc_df, pid_mapping)
@@ -1126,7 +1189,7 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
         if is_recent:
             app_pkg = "com.sec.android.app.launcher" 
         else:
-            raise RuntimeError(f"Không tìm được launching:... trong trace {trace_path}")
+            print(f"Không tìm được launching:... trong trace {trace_path}")
 
     # 2. Identify App Process (UPID/PID)
     # - Recent: Process chính chứa Resume/Choreographer thường là Launcher
@@ -1152,12 +1215,13 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
                      app_upid = int(df_upid.iloc[0]['upid'])
                      app_tid = app_pid # Fallback
             else:
-                raise RuntimeError("Recent: Không tìm thấy process phù hợp (Resume/Launcher)")
+                print(f"[WARN] {Path(trace_path).name}: Cannot identify Recent process.")
     else:
         # Logic App thường
-        app_proc = find_app_process(tp, app_pkg)
+        app_proc = find_app_process(tp)
         if not app_proc:
-            raise RuntimeError(f"Không tìm được process cho app {app_pkg}")
+            print(f"[WARN] {Path(trace_path).name}: No activityStart/Resume found. Analysis skipped.")
+            return {} 
         app_upid, app_pid, app_name, app_tid = app_proc
 
     # 3. Execution Interval
@@ -1165,7 +1229,7 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
     # [Touch Down]
     touch_down_ts = get_first_deliver_input(tp)
     if touch_down_ts is None:
-        raise RuntimeError("Không tìm thấy deliverInputEvent trong trace")
+        print("Không tìm thấy deliverInputEvent trong trace")
 
     # [Animating] (Recent không có animating trong system_server)
     animating_end = 0
@@ -1483,8 +1547,32 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
         target_abnormal_slices = ['bindApplication']
         abnormal_df = get_abnormal_processes(tp, abnormal_start, abnormal_end, app_pid, target_abnormal_slices)
         metrics["Abnormal_Process_Data"] = process_abnormal_data(abnormal_df)
-        
         metrics["Background_Process_States"] = get_background_process_states(tp, touch_down_ts if touch_down_ts else 0, end_ts if end_ts else 0)
+
+    # =========================================================
+    # [NEW] PRIORITY STATISTICS
+    # =========================================================
+    prio_data = {}
+    
+    # Định nghĩa các khoảng thời gian cần soi (Name: (start, end))
+    # Lưu ý: Các biến bind_app_ts, bind_app_end... đã được tính ở phần trên của hàm analyze_trace
+    target_intervals = {
+        'bindApplication': (bind_app_ts, bind_app_end) if 'bind_app_ts' in locals() and bind_app_ts else None,
+        'activityStart': (act_start_ts, act_start_end) if 'act_start_ts' in locals() and act_start_ts else None,
+        'activityResume': (act_resume_ts, act_resume_end) if 'act_resume_ts' in locals() and act_resume_ts else None,
+        'Choreographer': (cho_ts, cho_end) if 'cho_ts' in locals() and cho_ts else None
+    }
+    
+    if app_tid: # Đảm bảo đã tìm được Main Thread ID
+        for cat_name, interval in target_intervals.items():
+            if interval:
+                start, end = interval
+                if start and end and end > start:
+                    stats = get_priority_distribution(tp, app_tid, start, end)
+                    if stats:
+                        prio_data[cat_name] = stats
+    
+    metrics["Priority_Data"] = prio_data
 
     metrics["PID_Mapping"] = pid_mapping if pid_mapping else {}
     metrics["App Package"] = app_pkg 

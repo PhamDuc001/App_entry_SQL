@@ -48,7 +48,17 @@ from dumpstate_parser import (
     collect_bugreport_mappings, 
     get_bugreport_for_log, 
     get_app_group,
-    get_bugreport_group_from_name
+    get_bugreport_group_from_name,
+    # New imports for extended profiling table
+    parse_uptime,
+    parse_pss_for_app,
+    parse_pageboostd_for_app,
+    parse_start_reasons,
+    parse_kill_reasons,
+    parse_compiler_type,
+    count_crashes,
+    get_memory_data_for_cycle,
+    find_dumpstate_content
 )
 
 # ---------------------------------------------------------------------------
@@ -229,9 +239,8 @@ def _process_single_trace_worker(args):
     Worker function cho multiprocessing.
     [UPDATED] Nhận trực tiếp pid_mapping từ tham số, không dùng biến Global.
     """
-    # Unpack thêm tham số pid_mapping
-    file_path, occurrence, app_name, pid_mapping = args 
-    
+    # Unpack thêm tham số pid_mapping và mapping_info (mapping_info dùng sau khi process)
+    file_path, occurrence, app_name, pid_mapping, mapping_info = args 
     filename = Path(file_path).stem
     config = TraceProcessorConfig(bin_path=TRACE_PROCESSOR_BIN)
     
@@ -283,54 +292,75 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
                        target_apps: List[str] = None, extracted: bool = False) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
     """
     Xử lý tất cả traces.
-    [UPDATED] Sử dụng sorted filename approach để match trace với bugreport.
+    [UPDATED] Fix lỗi dồn cycle khi có trace bị lỗi (giữ nguyên None trong list kết quả).
     """
     trace_files = collect_trace_files(folder_path)
     app_groups = group_traces_by_app(trace_files, target_apps)
     
-    # [NEW] Build mapping using sorted filename approach
+    # Build mapping using sorted filename approach
     print(f"\n[{label}] Building trace-bugreport mapping (extracted={extracted})...")
     trace_mapping = build_trace_bugreport_mapping(folder_path, extracted)
     
-    # Count how many traces have valid mappings
-    valid_count = sum(1 for m in trace_mapping.values() if m)
+    valid_count = sum(1 for m in trace_mapping.values() if m and m.get('bugreport_path'))
     print(f"[{label}] Mapped {valid_count}/{len(trace_mapping)} traces to bugreports")
     
     tasks = []
     for app_name, file_list in app_groups.items():
         for file_path, occurrence in file_list:
-            # [NEW] Lấy pid_mapping từ trace_mapping đã build
-            pid_mapping = trace_mapping.get(file_path, None)
+            mapping_info = trace_mapping.get(file_path, {})
+            pid_mapping = mapping_info.get('pid_mapping', {}) if mapping_info else {}
+            if not pid_mapping: pid_mapping = None
             
-            # Convert empty dict to None for consistency
-            if pid_mapping is not None and len(pid_mapping) == 0:
-                pid_mapping = None
-            
-            tasks.append((file_path, occurrence, app_name, pid_mapping))
+            tasks.append((file_path, occurrence, app_name, pid_mapping, mapping_info))
     
     print(f"[{label}] Processing {len(tasks)} trace files with {num_workers} workers...")
     
-    results = defaultdict(lambda: {'entry': [None] * 100, 'reentry': [None] * 100})
+    # Khởi tạo list với dung lượng dư thừa để tránh index error
+    results = defaultdict(lambda: {'entry': [], 'reentry': []})
+    task_mapping_info = {t[0]: t[4] for t in tasks}
     
     pool = Pool(processes=num_workers)
     try:
         for i, (app_name, occurrence, category, metrics, filename) in enumerate(pool.imap(_process_single_trace_worker, tasks)):
+            
+            # [FIX 1] Luôn tính toán cycle index, kể cả khi metrics là None (lỗi)
+            # Logic: Trace 1,2 -> Cycle 0; Trace 3,4 -> Cycle 1
+            cycle_index = (occurrence - 1) // 2
+            
+            # Mở rộng list nếu cần thiết để đảm bảo index tồn tại
+            target_list = results[app_name][category]
+            while len(target_list) <= cycle_index:
+                target_list.append(None)
+            
             if metrics:
-                cycle_index = (occurrence - 1) // 2
-                while len(results[app_name][category]) <= cycle_index:
-                    results[app_name][category].append(None)
+                # Nếu có data, bổ sung thông tin trace file
+                trace_file = None
+                for task in tasks:
+                    if Path(task[0]).stem == filename:
+                        trace_file = task[0]
+                        break
                 
+                if trace_file:
+                    metrics['trace_file'] = trace_file
+                    metrics['trace_mapping'] = task_mapping_info.get(trace_file, {})
+                
+                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - OK")
                 results[app_name][category][cycle_index] = metrics
-                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {filename}")
+            else:
+                # Nếu metrics None (lỗi), giữ nguyên giá trị None tại index đó
+                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - FAILED/EMPTY")
+                results[app_name][category][cycle_index] = None
+
     finally:
         pool.close() 
         pool.join()  
     
+    # [FIX 2] KHÔNG lọc bỏ None. Giữ nguyên cấu trúc [Data, None, Data] để Excel vẽ đúng cột.
     cleaned_results = {}
     for app_name, categories in results.items():
         cleaned_results[app_name] = {
-            'entry': [m for m in categories['entry'] if m is not None],
-            'reentry': [m for m in categories['reentry'] if m is not None]
+            'entry': categories['entry'], # Giữ nguyên list gốc
+            'reentry': categories['reentry']
         }
     
     return cleaned_results
@@ -420,7 +450,9 @@ def create_excel_output(
     output_folder: str,
     header_title: str,
     dut_device_code: str,
-    ref_device_code: str
+    ref_device_code: str,
+    dut_folder_path: str = "",
+    ref_folder_path: str = ""
 ) -> None:
     """
     Tạo 2 file Excel: execution_entry.xlsx và execution_reentry.xlsx.
@@ -462,7 +494,9 @@ def create_excel_output(
                 launch_type,
                 app_name,
                 dut_device_code,
-                ref_device_code
+                ref_device_code,
+                dut_folder_path,
+                ref_folder_path
             )
         
         wb.close()
@@ -576,7 +610,9 @@ def create_sheet(
     launch_type: str,
     app_name: str,
     dut_device_code: str,
-    ref_device_code: str
+    ref_device_code: str,
+    dut_folder_path: str = "",
+    ref_folder_path: str = ""
 ) -> None:
     ws = wb.add_worksheet(sheet_name)
     
@@ -594,6 +630,18 @@ def create_sheet(
     fmt_diff_slow = wb.add_format({"num_format": "0.000", "align": "center", "bg_color": "#FFB3B3", "border": 1, "border_color": "#000000"})
     fmt_diff_fast = wb.add_format({"num_format": "0.000", "align": "center", "bg_color": "#B3FFB3", "border": 1, "border_color": "#000000"})
     fmt_diff_normal = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
+    
+    # Format for new section headers (MEMORY, LOADAPKASSETS, ABNORMAL)
+    fmt_section_header = wb.add_format({
+        "bold": True, 
+        "align": "left",
+        "bg_color": "#FFFFFF",
+        "font_color": "#000000",
+        "border": 1,
+        "border_color": "#000000"
+    })
+    fmt_section_value = wb.add_format({"align": "center", "border": 1, "border_color": "#000000"})
+    fmt_section_text = wb.add_format({"align": "left", "border": 1, "border_color": "#000000", "text_wrap": True})
     
     # Số lượng cycles
     num_dut_cycles = len(dut_cycles)
@@ -919,6 +967,276 @@ def create_sheet(
                     
             row_idx += 1
 
+    # =========================================================================
+    # [NEW] EXTENDED PROFILING SECTIONS
+    # =========================================================================
+    
+    # Calculate column indices (same as main table)
+    total_cols = 1 + max_cycles + 1 + max_cycles + 1 + 1  # Metric + DUT cycles + DUT Avg + REF cycles + REF Avg + Diff
+    dut_avg_col = 1 + max_cycles
+    ref_avg_col = dut_avg_col + 1 + max_cycles
+    diff_col = ref_avg_col + 1
+    
+    # ---------------------------------------------------------
+    # === MEMORY SECTION ===
+    # ---------------------------------------------------------
+    row_idx += 1  # Empty separator
+    
+    # Section header - merged across all columns
+    ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "MEMORY", fmt_section_header)
+    row_idx += 1
+    
+    # Memory metrics: MemFree, MemAvailable, App PSS, Pageboostd
+    memory_metrics = ["MemFree (MB)", "MemAvailable (MB)", "App PSS (MB)", "Pageboostd (MB)"]
+    
+    for metric in memory_metrics:
+        ws.write(row_idx, 0, metric, fmt_label)
+        
+        dut_values = []
+        ref_values = []
+        
+        for i in range(max_cycles):
+            # Get memory data for DUT
+            if i < num_dut_cycles and dut_folder_path:
+                mem_data = get_memory_data_for_cycle(dut_folder_path, app_name, i)
+                # Get dumpstate content for PSS and Pageboostd
+                # Use dut_cycles directly (not adjusted) to ensure trace_mapping is available
+                dut_cycle = dut_cycles[i] if i < len(dut_cycles) else None
+                dumpstate_content = None
+                if dut_cycle:
+                    trace_mapping_info = dut_cycle.get('trace_mapping', {})
+                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                    if bugreport_path:
+                        dumpstate_content = find_dumpstate_content(bugreport_path)
+                
+                if "MemFree" in metric:
+                    val = mem_data.get('MemFree', 0.0)
+                elif "MemAvailable" in metric:
+                    val = mem_data.get('MemAvailable', 0.0)
+                elif "App PSS" in metric and dumpstate_content:
+                    val = parse_pss_for_app(dumpstate_content, app_name)
+                elif "Pageboostd" in metric and dumpstate_content:
+                    val = parse_pageboostd_for_app(dumpstate_content, app_name)
+                else:
+                    val = 0.0
+                    
+                ws.write(row_idx, 1 + i, val if val > 0 else "", fmt_section_value)
+                if val > 0:
+                    dut_values.append(val)
+            else:
+                ws.write(row_idx, 1 + i, "", fmt_section_value)
+            
+            # Get memory data for REF
+            if i < num_ref_cycles and ref_folder_path:
+                mem_data = get_memory_data_for_cycle(ref_folder_path, app_name, i)
+                # Use ref_cycles directly (not adjusted) to ensure trace_mapping is available
+                ref_cycle = ref_cycles[i] if i < len(ref_cycles) else None
+                dumpstate_content = None
+                if ref_cycle:
+                    trace_mapping_info = ref_cycle.get('trace_mapping', {})
+                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                    if bugreport_path:
+                        dumpstate_content = find_dumpstate_content(bugreport_path)
+                
+                if "MemFree" in metric:
+                    val = mem_data.get('MemFree', 0.0)
+                elif "MemAvailable" in metric:
+                    val = mem_data.get('MemAvailable', 0.0)
+                elif "App PSS" in metric and dumpstate_content:
+                    val = parse_pss_for_app(dumpstate_content, app_name)
+                elif "Pageboostd" in metric and dumpstate_content:
+                    val = parse_pageboostd_for_app(dumpstate_content, app_name)
+                else:
+                    val = 0.0
+                    
+                ws.write(row_idx, dut_avg_col + 1 + i, val if val > 0 else "", fmt_section_value)
+                if val > 0:
+                    ref_values.append(val)
+            else:
+                ws.write(row_idx, dut_avg_col + 1 + i, "", fmt_section_value)
+        
+        # Calculate and write averages
+        dut_avg = sum(dut_values) / len(dut_values) if dut_values else 0.0
+        ref_avg = sum(ref_values) / len(ref_values) if ref_values else 0.0
+        
+        ws.write(row_idx, dut_avg_col, dut_avg if dut_avg > 0 else "", fmt_val)
+        ws.write(row_idx, ref_avg_col, ref_avg if ref_avg > 0 else "", fmt_val)
+        
+        # Diff calculation
+        if dut_avg > 0 and ref_avg > 0:
+            diff = dut_avg - ref_avg
+            # For memory, higher is better for Free/Available, so positive diff is good
+            if "Free" in metric or "Available" in metric:
+                # fmt_diff = fmt_diff_fast if diff > 0 else (fmt_diff_slow if diff < 0 else fmt_diff_normal)
+                fmt_diff = fmt_diff_normal
+            else:
+                # fmt_diff = fmt_diff_slow if diff > 0 else (fmt_diff_fast if diff < 0 else fmt_diff_normal)
+                fmt_diff = fmt_diff_normal
+            ws.write(row_idx, diff_col, diff, fmt_diff)
+        else:
+            ws.write(row_idx, diff_col, "", fmt_val)
+        
+        row_idx += 1
+    
+    # ---------------------------------------------------------
+    # === LOADAPKASSETS SECTION (EXTENDED) ===
+    # ---------------------------------------------------------
+    
+    # 1. Thu thập dữ liệu trước
+    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in dut_cycles]
+    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in ref_cycles]
+    
+    target_categories = ["system_server", "system_ui", "launching_app"]
+    
+    # 2. Kiểm tra xem có bất kỳ dữ liệu nào không
+    has_loadapk_data = False
+    for cycle_data in all_dut_loadapk + all_ref_loadapk:
+        if isinstance(cycle_data, dict):
+            for cat in target_categories:
+                # Kiểm tra nếu category có list asset và list đó không rỗng
+                if cycle_data.get(cat):
+                    has_loadapk_data = True
+                    break
+        if has_loadapk_data: break
+    
+    # 3. Chỉ vẽ bảng nếu có dữ liệu
+    if has_loadapk_data:
+        row_idx += 1  # Dòng trống ngăn cách
+        
+        # Vẽ Header Section
+        ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "LOADAPKASSETS (>50ms)", fmt_section_header)
+        row_idx += 1
+        
+        # Vẽ từng Category
+        for category in target_categories:
+            # Label Category
+            ws.write(row_idx, 0, category.title(), fmt_label)
+            
+            # Fill DUT Cycles
+            col_idx = 1
+            dut_sum_vals = []
+            for i in range(max_cycles):
+                val = 0.0
+                if i < len(all_dut_loadapk):
+                    cycle_data = all_dut_loadapk[i]
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        # TÍNH TỔNG: Cộng dồn thời gian
+                        val = sum(item.get('dur_ms', 0.0) for item in assets)
+                
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_section_value)
+                if val > 0: dut_sum_vals.append(val)
+                col_idx += 1
+            
+            # DUT Avg
+            dut_avg = sum(dut_sum_vals) / len(dut_sum_vals) if dut_sum_vals else 0.0
+            write_value_or_empty(ws, row_idx, col_idx, dut_avg, fmt_val)
+            col_idx += 1
+
+            # Fill REF Cycles
+            ref_sum_vals = []
+            for i in range(max_cycles):
+                val = 0.0
+                if i < len(all_ref_loadapk):
+                    cycle_data = all_ref_loadapk[i]
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        # TÍNH TỔNG
+                        val = sum(item.get('dur_ms', 0.0) for item in assets)
+                
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_section_value)
+                if val > 0: ref_sum_vals.append(val)
+                col_idx += 1
+            
+            # REF Avg
+            ref_avg = sum(ref_sum_vals) / len(ref_sum_vals) if ref_sum_vals else 0.0
+            write_value_or_empty(ws, row_idx, col_idx, ref_avg, fmt_val)
+            col_idx += 1
+            
+            # Diff
+            if dut_avg > 0 or ref_avg > 0:
+                diff = dut_avg - ref_avg
+                # Format màu sắc nếu chênh lệch lớn
+                fmt = fmt_diff_normal
+                if diff > 50: fmt = fmt_diff_slow
+                elif diff < -50: fmt = fmt_diff_fast
+                write_value_or_empty(ws, row_idx, col_idx, diff, fmt)
+            else:
+                ws.write(row_idx, col_idx, "", fmt_val)
+            
+            row_idx += 1
+
+    
+    # ---------------------------------------------------------
+    # === ABNORMAL SECTION ===
+    # ---------------------------------------------------------
+    row_idx += 1  # Empty separator
+    
+    ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "ABNORMAL", fmt_section_header)
+    row_idx += 1
+    
+    # Abnormal metrics: Uptime, Start reason, Kill reason, Crash count, Compiler
+    abnormal_rows = ["Uptime (minute)", "Start reason", "Kill reason", "Crash count", "Compiler"]
+    
+    for metric in abnormal_rows:
+        ws.write(row_idx, 0, metric, fmt_label)
+        
+        for i in range(max_cycles):
+            # Get DUT abnormal data
+            dut_val = ""
+            if i < len(dut_cycles):
+                dut_cycle = dut_cycles[i]
+                if dut_cycle:
+                    trace_mapping_info = dut_cycle.get('trace_mapping', {})
+                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                    if bugreport_path:
+                        dumpstate_content = find_dumpstate_content(bugreport_path)
+                        if dumpstate_content:
+                            if "Uptime" in metric:
+                                dut_val = parse_uptime(dumpstate_content)
+                            elif metric == "Start reason":
+                                dut_val = parse_start_reasons(dumpstate_content, app_name)
+                            elif metric == "Kill reason":
+                                reasons = parse_kill_reasons(dumpstate_content, app_name)
+                                dut_val = ", ".join(reasons) if reasons else ""
+                            elif metric == "Crash count":
+                                dut_val = count_crashes(dumpstate_content)
+                            elif metric == "Compiler":
+                                dut_val = parse_compiler_type(dumpstate_content, app_name)
+            
+            ws.write(row_idx, 1 + i, dut_val, fmt_section_text if isinstance(dut_val, str) else fmt_section_value)
+            
+            # Get REF abnormal data
+            ref_val = ""
+            if i < len(ref_cycles):
+                ref_cycle = ref_cycles[i]
+                if ref_cycle:
+                    trace_mapping_info = ref_cycle.get('trace_mapping', {})
+                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                    if bugreport_path:
+                        dumpstate_content = find_dumpstate_content(bugreport_path)
+                        if dumpstate_content:
+                            if "Uptime" in metric:
+                                ref_val = parse_uptime(dumpstate_content)
+                            elif metric == "Start reason":
+                                ref_val = parse_start_reasons(dumpstate_content, app_name)
+                            elif metric == "Kill reason":
+                                reasons = parse_kill_reasons(dumpstate_content, app_name)
+                                ref_val = ", ".join(reasons) if reasons else ""
+                            elif metric == "Crash count":
+                                ref_val = count_crashes(dumpstate_content)
+                            elif metric == "Compiler":
+                                ref_val = parse_compiler_type(dumpstate_content, app_name)
+            
+            ws.write(row_idx, dut_avg_col + 1 + i, ref_val, fmt_section_text if isinstance(ref_val, str) else fmt_section_value)
+        
+        # Avg and Diff are mostly N/A for text fields
+        ws.write(row_idx, dut_avg_col, "", fmt_val)
+        ws.write(row_idx, ref_avg_col, "", fmt_val)
+        ws.write(row_idx, diff_col, "", fmt_val)
+        
+        row_idx += 1
+
     # ---------------------------------------------------------
     # === Abnormal Process & Background Activity Table ===
     # ---------------------------------------------------------
@@ -1223,7 +1541,146 @@ def create_sheet(
     # Thread
     ws.set_column(5, 5, 40) # Thread Name (Process)
     ws.set_column(6, 8, 10) # Values
- 
+    
+
+    # ---------------------------------------------------------
+    # === PRIORITY STATICS TABLE (NEW STRUCTURE) ===
+    # ---------------------------------------------------------
+    row_idx += 3
+    
+    # 1. FORMATS
+    # Header chính (Priority Statics) - Màu tím nhạt, chữ đậm, border
+    fmt_prio_main_title = wb.add_format({
+        "bold": True, "align": "center", "valign": "vcenter", 
+        "bg_color": "#D8BFD8", "border": 1, "border_color": "#000000", "font_size": 12
+    })
+    
+    # Format mới cho dòng Frequency (nhỏ hơn, nghiêng)
+    fmt_prio_freq_label = wb.add_format({"align": "right", "italic": True, "font_color": "#555555", "border": 1, "border_color": "#000000"})
+
+    # Header cột (DUT Cy1...)
+    fmt_prio_col_header = wb.add_format({
+        "bold": True, "align": "center", "bg_color": "#E6E6FA", "border": 1, "border_color": "#000000"
+    })
+    
+    # Category Row (bindApplication...) - Merge, bg xám/đen, chữ đen/đậm
+    fmt_prio_cat_merge = wb.add_format({
+        "bold": True, "align": "left", "valign": "vcenter",
+        "bg_color": "#D3D3D3", "font_color": "#000000", # Xám đậm, chữ đen
+        "border": 1, "border_color": "#000000"
+    })
+    
+    # Value Cell - Percentage
+    fmt_prio_val = wb.add_format({
+        "num_format": "0.00%", "align": "center", "border": 1, "border_color": "#000000"
+    }) 
+    
+    # Priority Label Cell (100, 110...)
+    fmt_prio_label = wb.add_format({
+        "align": "left", "border": 1, "border_color": "#000000"
+    })
+
+    # 2. PREPARE DATA
+    all_dut_prio = [cycle.get("Priority_Data", {}) if cycle else {} for cycle in dut_cycles]
+    all_ref_prio = [cycle.get("Priority_Data", {}) if cycle else {} for cycle in ref_cycles]
+    
+    categories = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
+    
+    # Check if any data exists
+    has_prio_data = False
+    for cycle_data in all_dut_prio + all_ref_prio:
+        if cycle_data: has_prio_data = True; break
+    
+    if has_prio_data:
+        # Xác định cột cuối cùng của bảng
+        last_col = 1 + len(dut_cycles) + len(ref_cycles) - 1 # (Category col + DUT cols + REF cols) - 1 index
+        
+        # 3. DRAW MAIN TITLE (MERGED)
+        # Merge dòng đầu tiên từ cột A đến hết
+        ws.merge_range(row_idx, 0, row_idx, last_col, "Priority Statics", fmt_prio_main_title)
+        row_idx += 1
+        
+        # 4. DRAW COLUMN HEADERS
+        ws.write(row_idx, 0, "Category/Priority", fmt_prio_col_header)
+        
+        col_idx = 1
+        for i in range(1, len(dut_cycles) + 1):
+            ws.write(row_idx, col_idx, f"DUT Cy{i}", fmt_prio_col_header)
+            col_idx += 1
+        
+        for i in range(1, len(ref_cycles) + 1):
+            ws.write(row_idx, col_idx, f"REF Cy{i}", fmt_prio_col_header)
+            col_idx += 1
+            
+        row_idx += 1
+        
+        # 5. DRAW DATA BY CATEGORY
+        for category in categories:
+            # 5a. Tìm tất cả Priority ID xuất hiện trong Category này (Union set)
+            all_seen_priorities = set()
+            
+            # Quét DUT
+            for prio_map in all_dut_prio:
+                if category in prio_map:
+                    all_seen_priorities.update(prio_map[category].keys())
+            # Quét REF
+            for prio_map in all_ref_prio:
+                if category in prio_map:
+                    all_seen_priorities.update(prio_map[category].keys())
+            
+            if not all_seen_priorities:
+                continue 
+                
+            sorted_priorities = sorted(list(all_seen_priorities))
+            
+            # 5b. Vẽ Category Header (MERGED ROW)
+            # Merge từ cột A đến hết bảng, nền xám, chữ đen
+            ws.merge_range(row_idx, 0, row_idx, last_col, category, fmt_prio_cat_merge)
+            row_idx += 1
+            
+            # 5c. Vẽ từng dòng Priority
+            for prio in sorted_priorities:
+                ws.write(row_idx, 0, str(prio), fmt_prio_label)
+                col_idx = 1
+                
+                # --- Fill DUT Cycles ---
+                for i in range(max_cycles):
+                    val = ""
+                    if i < len(all_dut_prio):
+                        cycle_data = all_dut_prio[i]
+                        cat_data = cycle_data.get(category, {})
+                        
+                        if cat_data:
+                            # Tính tổng thời gian chạy trong cycle này để làm mẫu số
+                            total_run_ms = sum(cat_data.values())
+                            prio_ms = cat_data.get(prio, 0.0)
+                            
+                            if total_run_ms > 0 and prio_ms > 0:
+                                val = prio_ms / total_run_ms # Calculate Percentage
+                    
+                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
+                    col_idx += 1
+                    
+                # --- Fill REF Cycles ---
+                for i in range(max_cycles):
+                    val = ""
+                    if i < len(all_ref_prio):
+                        cycle_data = all_ref_prio[i]
+                        cat_data = cycle_data.get(category, {})
+                        
+                        if cat_data:
+                            total_run_ms = sum(cat_data.values())
+                            prio_ms = cat_data.get(prio, 0.0)
+                            
+                            if total_run_ms > 0 and prio_ms > 0:
+                                val = prio_ms / total_run_ms
+                    
+                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
+                    col_idx += 1
+                    
+                row_idx += 1
+
+
     # =============== Top Block I/O Table (MOVED TO POSITION 5) ================
     row_idx += 3
     
@@ -1273,7 +1730,8 @@ def create_sheet(
             # Tính Diff
             diff = dut_avg - ref_avg
             
-            lib_stats.append({
+            if (diff > 0):
+                lib_stats.append({
                 'name': lib_name,
                 'dut_times': dut_times,
                 'dut_avg': dut_avg,
@@ -1281,7 +1739,6 @@ def create_sheet(
                 'ref_avg': ref_avg,
                 'diff': diff
             })
-
         # ---------------------------------------------------------
         # BƯỚC 2: Sort theo Diff giảm dần (Cao xuống thấp)
         # ---------------------------------------------------------
@@ -1361,28 +1818,30 @@ def create_sheet(
             row_idx += 1
     
     
-    # === LoadApkAssets Table ===
+    # ---------------------------------------------------------
+    # === LoadApkAssets Table (UPDATED FOR CATEGORIES) ===
+    # ---------------------------------------------------------
     row_idx += 3
 
-    # Thu thập LoadApkAsset data từ tất cả cycles
-    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", []) if cycle else [] for cycle in dut_cycles]
-    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", []) if cycle else [] for cycle in ref_cycles]
+    # Thu thập data từ tất cả cycles
+    # Lưu ý: Mỗi cycle data bây giờ là Dict {'system_server': [], 'system_ui': [], ...}
+    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in dut_cycles]
+    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in ref_cycles]
 
-    # Tạo union set của tất cả LoadApkAsset names
-    all_loadapk_names = set()
-    for cycle_data in all_dut_loadapk:
-        for apk in cycle_data:
-            all_loadapk_names.add(apk['name'])
-    for cycle_data in all_ref_loadapk:
-        for apk in cycle_data:
-            all_loadapk_names.add(apk['name'])
-    
-    # print(all_loadapk_names)
-    # CHỈ VẼ BẢNG NẾU CÓ DATA
-    if all_loadapk_names:
-        # print("============================Start LoadApkAssets==============================")
-        sorted_loadapk_names = sorted(all_loadapk_names)
-        
+    # Các category cần hiển thị theo thứ tự
+    target_categories = ["system_server", "system_ui", "launching_app"]
+
+    # Kiểm tra xem có dữ liệu nào không để quyết định vẽ bảng
+    has_data = False
+    for cycle_data in all_dut_loadapk + all_ref_loadapk:
+        if not isinstance(cycle_data, dict): continue # Skip nếu data cũ/lỗi
+        for cat in target_categories:
+            if cycle_data.get(cat):
+                has_data = True
+                break
+        if has_data: break
+
+    if has_data:
         # === HEADER ROW ===
         ws.merge_range(row_idx, 0, row_idx, 0, "LoadApkAssets (>50ms)", fmt_blockio_header)
         
@@ -1397,81 +1856,71 @@ def create_sheet(
         
         # === SUB-HEADER ROW ===
         row_idx += 1
-        ws.write(row_idx, 0, "LoadApkAssets Name", fmt_blockio_header)
+        ws.write(row_idx, 0, "Category / Asset Name", fmt_blockio_header)
         
         col_idx = 1
-        for i in range(len(dut_cycles)):
+        for _ in range(len(dut_cycles)):
             ws.write(row_idx, col_idx, "(ms)", fmt_blockio_header)
             col_idx += 1
-        
-        for i in range(len(ref_cycles)):
+        for _ in range(len(ref_cycles)):
             ws.write(row_idx, col_idx, "(ms)", fmt_blockio_header)
             col_idx += 1
         
         ws.set_column(0, 0, 50)
-        ws.set_column(1, col_idx - 1, 12)
         
-        # === DATA ROWS - LOGIC ĐÚNG ===
+        # === DATA ROWS ===
         row_idx += 1
-        
-        # Tạo flat list của TẤT CẢ entries để phân bổ đúng
-        all_entries = []
-        for apk_name in sorted_loadapk_names:
-            for cycle_idx, cycle_data in enumerate(all_dut_loadapk + all_ref_loadapk):
-                for apk in cycle_data:
-                    if apk['name'] == apk_name:
-                        all_entries.append({
-                            'name': apk_name,
-                            'dur_ms': apk['dur_ms'],
-                            'cycle_idx': cycle_idx,
-                            'is_dut': cycle_idx < len(all_dut_loadapk)
-                        })
-        
-        # Group theo name và hiển thị
-        current_name = None
-        occurrence_num = 0
-        
-        for entry in all_entries:
-            if entry['name'] != current_name:
-                current_name = entry['name']
-                occurrence_num = 1
-            else:
-                occurrence_num += 1
+
+        for category in target_categories:
+            # 1. Thu thập tất cả tên Asset trong category này từ mọi cycle
+            cat_asset_names = set()
+            for cycle_data in all_dut_loadapk + all_ref_loadapk:
+                if isinstance(cycle_data, dict):
+                    assets = cycle_data.get(category, [])
+                    for a in assets:
+                        cat_asset_names.add(a['name'])
             
-            # Label
-            if occurrence_num > 1:
-                # label = f"{entry['name']} (#{occurrence_num})"
-                label = entry['name']
-            else:
-                label = entry['name']
-            
-            ws.write(row_idx, 0, label, fmt_label)
-            col_idx = 1
-            
-            # Fill data cho cycle tương ứng
-            cycle_offset = entry['cycle_idx']
-            if entry['is_dut']:
-                actual_cycle = cycle_offset
-            else:
-                actual_cycle = cycle_offset - len(all_dut_loadapk)
-            
-            # DUT cycles - để trống tất cả trừ cycle chứa entry này
-            for i in range(len(all_dut_loadapk)):
-                if entry['is_dut'] and i == actual_cycle:
-                    write_value_or_empty(ws, row_idx, col_idx, entry['dur_ms'], fmt_blockio_val)
-                else:
-                    ws.write(row_idx, col_idx, "", fmt_val)
-                col_idx += 1
-            
-            # REF cycles - tương tự
-            for i in range(len(all_ref_loadapk)):
-                if not entry['is_dut'] and i == actual_cycle:
-                    write_value_or_empty(ws, row_idx, col_idx, entry['dur_ms'], fmt_blockio_val)
-                else:
-                    ws.write(row_idx, col_idx, "", fmt_val)
-                col_idx += 1
-            
+            sorted_assets = sorted(list(cat_asset_names))
+
+            if not sorted_assets:
+                continue
+
+            # 2. Hiển thị tên Category (In đậm, Background màu tối hoặc khác biệt)
+            # Merge hết các cột để làm tiêu đề ngăn cách
+            total_cols_table = 1 + len(dut_cycles) + len(ref_cycles)
+            ws.merge_range(row_idx, 0, row_idx, total_cols_table - 1, category.title(), fmt_section_header)
             row_idx += 1
+
+            # 3. Vẽ từng Asset trong category đó
+            for asset_name in sorted_assets:
+                ws.write(row_idx, 0, asset_name, fmt_label)
+                col_idx = 1
+
+                # Fill DUT Cycles
+                for cycle_data in all_dut_loadapk:
+                    val = ""
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        found_item = next((x for x in assets if x['name'] == asset_name), None)
+                        if found_item:
+                            val = found_item['dur_ms']
+                    
+                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                    col_idx += 1
+                
+                # Fill REF Cycles
+                for cycle_data in all_ref_loadapk:
+                    val = ""
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        found_item = next((x for x in assets if x['name'] == asset_name), None)
+                        if found_item:
+                            val = found_item['dur_ms']
+                    
+                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                    col_idx += 1
+                
+                row_idx += 1
 
     # ---------------------------------------------------------
     # === Statistics Table (Binder Transaction, etc.) ===
@@ -1638,7 +2087,7 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         target_apps: Danh sách apps cần xử lý (optional)
         extracted: True nếu các Bugreport đã được giải nén thành folder
     """
-    num_workers = min(cpu_count(), 8)
+    num_workers = min(cpu_count(), 16)
     
     if not os.path.exists(dut_folder):
         raise FileNotFoundError(f"DUT folder not found: {dut_folder}")
@@ -1686,7 +2135,7 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     # Create Excel outputs
     print("\n[3/3] Creating Excel files...")
     output_folder = dut_folder  # Lưu vào thư mục DUT
-    create_excel_output(dut_results, ref_results, output_folder, header_title, dut_device_code, ref_device_code)
+    create_excel_output(dut_results, ref_results, output_folder, header_title, dut_device_code, ref_device_code, dut_folder, ref_folder)
     
     end_time = datetime.datetime.now()
     elapsed = (end_time - start_time).total_seconds()

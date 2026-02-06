@@ -7,6 +7,74 @@ description: Build a new CLI tool or automation script
 ## Overview
 This workflow guides you through building a production-ready CLI tool or automation script in Python.
 
+## Clarifying Questions
+
+Để xây dựng tool, tôi cần hiểu rõ requirements:
+
+1. **Mục đích chính**: Tool này làm gì?
+   - _______
+
+2. **Input**:
+   - Input format là gì? (CSV, JSON, TXT, etc.)
+   - Input đến từ đâu? (file, stdin, API, database)
+   - Có ví dụ về input không?
+   - _______
+
+3. **Output**:
+   - Output format mong muốn là gì? (CSV, JSON, HTML, Excel, etc.)
+   - Output đến đâu? (file, stdout, API, database)
+   - Có ví dụ về output mong muốn không?
+   - _______
+
+4. **Functionality**:
+   - Các features chính là gì?
+   - 1. _______
+   - 2. _______
+   - 3. _______
+
+5. **CLI Framework**: Bạn muốn dùng framework nào?
+   - [ ] argparse (standard library)
+   - [ ] click (decorator-based)
+   - [ ] typer (type-hint based)
+   - [ ] Không quan trọng, chọn phù hợp nhất
+
+6. **Configuration**:
+   - Cần configuration không?
+   - [ ] Có, từ file (YAML, TOML, JSON)
+   - [ ] Có, từ environment variables
+   - [ ] Có, từ CLI arguments
+   - [ ] Không cần
+
+7. **Constraints**:
+   - [ ] Không được thay đổi API hiện tại
+   - [ ] Phải maintain backward compatibility
+   - [ ] Time limit: _______
+   - [ ] Khác: _______
+
+## Interactive Planning Process
+
+```
+Step 1: User đưa ra request xây dựng tool
+    ↓
+Step 2: Agent hỏi clarifying questions (7 câu hỏi)
+    ↓
+Step 3: User trả lời các câu hỏi
+    ↓
+Step 4: Agent validates thông tin
+    ↓
+Step 5: Nếu chưa đủ, hỏi thêm
+    ↓
+Step 6: Khi đủ thông tin, tạo plan chi tiết
+    ↓
+Step 7: User review và feedback
+    ↓
+Step 8: Agent refine plan
+    ↓
+Step 9: User approve plan
+    ↓
+Step 10: Implement tool theo plan
+```
+
 ## Steps
 
 ### 1. Requirements Gathering
