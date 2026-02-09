@@ -1,0 +1,96 @@
+{
+    "_description": "Master diagnosis rules - defines check paths for each state issue",
+    "_version": "2.0",
+    "diagnosis_flow": {
+        "running": {
+            "description": "Running cao hơn REF = CPU-bound issue",
+            "check_paths": [
+                {
+                    "path_id": "run_1",
+                    "name": "Process Overlap Check",
+                    "table_ref": "tables/abnormal.json",
+                    "data_key": "abnormal_process_start",
+                    "condition": "Có process nào start trong khi app launch"
+                },
+                {
+                    "path_id": "run_2",
+                    "name": "Top CPU Check",
+                    "table_ref": "tables/top_cpu.json",
+                    "data_key": "process_diff",
+                    "condition": "Process nào có diff DUT-REF cao nhất"
+                },
+                {
+                    "path_id": "run_3",
+                    "name": "Warm/Cold Check",
+                    "table_ref": "tables/sequence.json",
+                    "data_key": "launch_type_count",
+                    "condition": "DUT có nhiều Cold launch hơn REF không"
+                }
+            ]
+        },
+        "runnable": {
+            "description": "Runnable cao hơn REF = Scheduling/Priority issue",
+            "check_paths": [
+                {
+                    "path_id": "rbl_1",
+                    "name": "Priority Distribution Check",
+                    "table_ref": "tables/priority.json",
+                    "data_key": "priority_pct",
+                    "condition": "DUT chạy ở priority thấp hơn REF"
+                },
+                {
+                    "path_id": "rbl_2",
+                    "name": "Frequency Check",
+                    "table_ref": "tables/frequency.json",
+                    "data_key": "cpu_frequency",
+                    "condition": "DUT chạy ở tần số thấp hơn"
+                }
+            ]
+        },
+        "uninterruptible_sleep": {
+            "description": "Uninterruptible Sleep cao = I/O blocking issue",
+            "check_paths": [
+                {
+                    "path_id": "usp_1",
+                    "name": "Block I/O Check",
+                    "table_ref": "tables/block_io.json",
+                    "data_key": "library_io_time",
+                    "condition": "Library nào gây block I/O nhiều nhất"
+                },
+                {
+                    "path_id": "usp_2",
+                    "name": "LoadApkAssets Check",
+                    "table_ref": "tables/loadapk.json",
+                    "data_key": "category_time",
+                    "condition": "system_server/system_ui/launching_app time"
+                },
+                {
+                    "path_id": "usp_3",
+                    "name": "Readahead Check",
+                    "table_ref": "tables/block_io.json",
+                    "data_key": "readahead_status",
+                    "condition": "Readahead đã enable chưa (TODO)"
+                }
+            ]
+        },
+        "sleeping": {
+            "description": "Sleeping cao = IPC/sync issue",
+            "check_paths": [
+                {
+                    "path_id": "slp_1",
+                    "name": "Binder Transaction Check",
+                    "table_ref": "tables/binder.json",
+                    "data_key": "transaction_count",
+                    "condition": "Số lượng binder calls DUT > REF"
+                },
+                {
+                    "path_id": "slp_2",
+                    "name": "Background Process Check",
+                    "table_ref": "tables/abnormal.json",
+                    "data_key": "background_process_active",
+                    "condition": "Có process background gây contention"
+                }
+            ]
+        }
+    }
+}

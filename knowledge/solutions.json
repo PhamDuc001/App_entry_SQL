@@ -1,0 +1,51 @@
+{
+    "_description": "Solutions database - Add solutions as you discover them",
+    "_version": "1.0",
+    "_last_updated": "2026-02-09",
+    "_instructions": "Add solutions under the appropriate state/issue category",
+    "solutions": {
+        "running": {
+            "process_overlap": [
+                {
+                    "id": "sol_run_001",
+                    "problem": "Process khác start cùng lúc app launch",
+                    "solution": "TODO: Add solution",
+                    "team": "TODO: Add team"
+                }
+            ],
+            "high_cpu_usage": []
+        },
+        "runnable": {
+            "low_priority": [
+                {
+                    "id": "sol_run_001",
+                    "problem": "App chạy ở priority thấp",
+                    "solution": "TODO: Add solution",
+                    "team": "TODO: Add team"
+                }
+            ],
+            "low_frequency": []
+        },
+        "uninterruptible_sleep": {
+            "block_io": [
+                {
+                    "id": "sol_io_001",
+                    "problem": "Block I/O cao trên library cụ thể",
+                    "solution": "TODO: Add solution (e.g., enable readahead)",
+                    "team": "TODO: Add team"
+                }
+            ],
+            "loadapkassets": []
+        },
+        "sleeping": {
+            "binder_transaction": [
+                {
+                    "id": "sol_sleep_001",
+                    "problem": "Quá nhiều binder transaction",
+                    "solution": "TODO: Add solution",
+                    "team": "TODO: Add team"
+                }
+            ]
+        }
+    }
+}

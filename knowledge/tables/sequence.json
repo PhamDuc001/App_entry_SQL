@@ -1,0 +1,59 @@
+{
+    "_description": "Sequence table analysis rules",
+    "_table": "sequence",
+    "_data_path": "analysis_input.apps.{app}.{launch_type}.state_diff",
+    "metrics": {
+        "App Execution Time": {
+            "description": "Tổng thời gian app launch",
+            "unit": "ms",
+            "threshold_diff": 50,
+            "higher_is_worse": true
+        },
+        "Running": {
+            "description": "Thời gian CPU thực thi",
+            "unit": "ms",
+            "threshold_diff": 10,
+            "higher_is_worse": true,
+            "related_checks": [
+                "run_1",
+                "run_2",
+                "run_3"
+            ]
+        },
+        "Runnable": {
+            "description": "Thời gian chờ CPU schedule",
+            "unit": "ms",
+            "threshold_diff": 10,
+            "higher_is_worse": true,
+            "related_checks": [
+                "rbl_1",
+                "rbl_2"
+            ]
+        },
+        "Uninterruptible Sleep": {
+            "description": "Thời gian chờ I/O",
+            "unit": "ms",
+            "threshold_diff": 30,
+            "higher_is_worse": true,
+            "related_checks": [
+                "usp_1",
+                "usp_2",
+                "usp_3"
+            ]
+        },
+        "Sleeping": {
+            "description": "Thời gian sleep/wait IPC",
+            "unit": "ms",
+            "threshold_diff": 10,
+            "higher_is_worse": true,
+            "related_checks": [
+                "slp_1",
+                "slp_2"
+            ]
+        }
+    },
+    "analysis_logic": {
+        "step_1": "Tìm metric có diff lớn nhất vượt threshold",
+        "step_2": "Theo related_checks để tiếp tục diagnose"
+    }
+}

@@ -1,0 +1,79 @@
+{
+    "_description": "Team responsibility mapping - Map issues to responsible teams",
+    "_version": "1.0",
+    "_last_updated": "2026-02-09",
+    "teams": {
+        "framework": {
+            "name": "Framework Team",
+            "responsibilities": [
+                "Activity lifecycle issues",
+                "Binder transaction optimization",
+                "System server performance"
+            ]
+        },
+        "kernel": {
+            "name": "Kernel Team",
+            "responsibilities": [
+                "Scheduler optimization",
+                "Priority boosting",
+                "I/O scheduling"
+            ]
+        },
+        "storage": {
+            "name": "Storage Team",
+            "responsibilities": [
+                "Block I/O optimization",
+                "Readahead configuration",
+                "File system performance"
+            ]
+        },
+        "memory": {
+            "name": "Memory Team",
+            "responsibilities": [
+                "Memory pressure issues",
+                "OOM handling",
+                "Page cache optimization"
+            ]
+        },
+        "app": {
+            "name": "App Team",
+            "responsibilities": [
+                "App-specific optimizations",
+                "Startup optimization",
+                "Dex optimization"
+            ]
+        }
+    },
+    "issue_to_team_mapping": {
+        "running.process_overlap": [
+            "framework",
+            "app"
+        ],
+        "running.high_cpu_usage": [
+            "app",
+            "framework"
+        ],
+        "runnable.low_priority": [
+            "kernel",
+            "framework"
+        ],
+        "runnable.low_frequency": [
+            "kernel"
+        ],
+        "uninterruptible_sleep.block_io": [
+            "storage",
+            "kernel"
+        ],
+        "uninterruptible_sleep.loadapkassets": [
+            "framework",
+            "storage"
+        ],
+        "sleeping.binder_transaction": [
+            "framework"
+        ],
+        "sleeping.background_process": [
+            "framework",
+            "app"
+        ]
+    }
+}

@@ -1,0 +1,31 @@
+{
+    "_description": "Memory analysis rules",
+    "_table": "memory",
+    "_data_path": "analysis_input.apps.{app}.{launch_type}.extend.{dut/ref}.memory",
+    "metrics": {
+        "MemFree_KB": {
+            "description": "Free memory available",
+            "lower_is_worse": true,
+            "threshold_kb": 500000
+        },
+        "MemAvailable_KB": {
+            "description": "Available memory for allocation",
+            "lower_is_worse": true,
+            "threshold_kb": 1000000
+        },
+        "App_PSS_KB": {
+            "description": "App's proportional set size",
+            "higher_is_worse": true,
+            "threshold_kb": 100000
+        },
+        "Pageboostd_KB": {
+            "description": "Pageboostd memory",
+            "info": "Samsung specific memory optimization"
+        }
+    },
+    "analysis_logic": {
+        "rule_1": "Nếu MemFree/MemAvailable thấp = memory pressure có thể gây slow",
+        "rule_2": "Nếu App PSS cao = app dùng nhiều memory"
+    },
+    "solutions": []
+}

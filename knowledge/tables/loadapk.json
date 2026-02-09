@@ -1,0 +1,27 @@
+{
+    "_description": "LoadApkAssets analysis rules",
+    "_table": "loadapk",
+    "_data_path": "analysis_input.apps.{app}.{launch_type}.extend.{dut/ref}.loadapkassets",
+    "categories": {
+        "system_server": {
+            "description": "Assets loaded by system_server",
+            "owner": "framework",
+            "threshold_ms": 10
+        },
+        "system_ui": {
+            "description": "Assets loaded by system UI",
+            "owner": "systemui",
+            "threshold_ms": 5
+        },
+        "launching_app": {
+            "description": "Assets loaded by launching app",
+            "owner": "app",
+            "threshold_ms": 20
+        }
+    },
+    "analysis_logic": {
+        "rule_1": "Nếu category nào có DUT > REF đáng kể = check owner tương ứng",
+        "rule_2": "Kiểm tra asset cache có hoạt động không"
+    },
+    "solutions": []
+}

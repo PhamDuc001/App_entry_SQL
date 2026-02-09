@@ -1,0 +1,54 @@
+{
+    "_description": "Abnormal process/activity analysis rules",
+    "_table": "abnormal",
+    "_data_path": "analysis_input.apps.{app}.{launch_type}.extend.{dut/ref}",
+    "abnormal_process_start": {
+        "description": "Processes started during app launch",
+        "data_type": "list",
+        "analysis": "Nếu có process khác start cùng lúc = resource contention"
+    },
+    "background_process_active": {
+        "description": "Background processes active during launch",
+        "data_type": "list",
+        "analysis": "Background process có thể gây CPU/memory contention"
+    },
+    "abnormal_info": {
+        "uptime_minutes": {
+            "description": "Device uptime",
+            "analysis": "Uptime thấp = gần reboot, có thể chưa warm up"
+        },
+        "start_reason": {
+            "description": "App start reason",
+            "values": [
+                "cold",
+                "warm",
+                "hot"
+            ],
+            "analysis": "Cold start chậm hơn warm/hot"
+        },
+        "kill_reasons": {
+            "description": "Previous kill reasons",
+            "values": [
+                "OOM",
+                "LMKD",
+                "user_request"
+            ],
+            "analysis": "OOM/LMKD = memory pressure trước đó"
+        },
+        "crash_count_avg": {
+            "description": "Average crash count",
+            "analysis": "Crash có thể gây slow startup"
+        },
+        "compiler": {
+            "description": "Dex compiler type",
+            "values": [
+                "speed",
+                "speed-profile",
+                "quicken",
+                "verify"
+            ],
+            "analysis": "speed-profile tốt nhất, verify chậm nhất"
+        }
+    },
+    "solutions": []
+}

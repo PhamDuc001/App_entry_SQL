@@ -38,6 +38,7 @@ from typing import Dict, Optional, Any, Tuple, List
 from collections import defaultdict
 
 import xlsxwriter
+import json
 
 from perfetto.trace_processor.api import TraceProcessor, TraceProcessorConfig
 from sql_query import *
@@ -241,7 +242,6 @@ def _process_single_trace_worker(args):
     """
     # Unpack thêm tham số pid_mapping và mapping_info (mapping_info dùng sau khi process)
     file_path, occurrence, app_name, pid_mapping, mapping_info = args 
-    
     filename = Path(file_path).stem
     config = TraceProcessorConfig(bin_path=TRACE_PROCESSOR_BIN)
     
@@ -293,49 +293,48 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
                        target_apps: List[str] = None, extracted: bool = False) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
     """
     Xử lý tất cả traces.
-    [UPDATED] Sử dụng sorted filename approach để match trace với bugreport.
+    [UPDATED] Fix lỗi dồn cycle khi có trace bị lỗi (giữ nguyên None trong list kết quả).
     """
     trace_files = collect_trace_files(folder_path)
     app_groups = group_traces_by_app(trace_files, target_apps)
     
-    # [NEW] Build mapping using sorted filename approach
+    # Build mapping using sorted filename approach
     print(f"\n[{label}] Building trace-bugreport mapping (extracted={extracted})...")
     trace_mapping = build_trace_bugreport_mapping(folder_path, extracted)
     
-    # Count how many traces have valid mappings
     valid_count = sum(1 for m in trace_mapping.values() if m and m.get('bugreport_path'))
     print(f"[{label}] Mapped {valid_count}/{len(trace_mapping)} traces to bugreports")
     
     tasks = []
     for app_name, file_list in app_groups.items():
         for file_path, occurrence in file_list:
-            # [UPDATED] Extract pid_mapping and trace_mapping_info from new structure
             mapping_info = trace_mapping.get(file_path, {})
             pid_mapping = mapping_info.get('pid_mapping', {}) if mapping_info else {}
+            if not pid_mapping: pid_mapping = None
             
-            # Convert empty dict to None for consistency
-            if not pid_mapping:
-                pid_mapping = None
-            
-            # Pass full mapping_info for later use in metrics
             tasks.append((file_path, occurrence, app_name, pid_mapping, mapping_info))
     
     print(f"[{label}] Processing {len(tasks)} trace files with {num_workers} workers...")
     
-    results = defaultdict(lambda: {'entry': [None] * 100, 'reentry': [None] * 100})
-    
-    # Store mapping info separately (since multiprocessing can't easily pass back)
-    task_mapping_info = {t[0]: t[4] for t in tasks}  # file_path -> mapping_info
+    # Khởi tạo list với dung lượng dư thừa để tránh index error
+    results = defaultdict(lambda: {'entry': [], 'reentry': []})
+    task_mapping_info = {t[0]: t[4] for t in tasks}
     
     pool = Pool(processes=num_workers)
     try:
         for i, (app_name, occurrence, category, metrics, filename) in enumerate(pool.imap(_process_single_trace_worker, tasks)):
+            
+            # [FIX 1] Luôn tính toán cycle index, kể cả khi metrics là None (lỗi)
+            # Logic: Trace 1,2 -> Cycle 0; Trace 3,4 -> Cycle 1
+            cycle_index = (occurrence - 1) // 2
+            
+            # Mở rộng list nếu cần thiết để đảm bảo index tồn tại
+            target_list = results[app_name][category]
+            while len(target_list) <= cycle_index:
+                target_list.append(None)
+            
             if metrics:
-                cycle_index = (occurrence - 1) // 2
-                while len(results[app_name][category]) <= cycle_index:
-                    results[app_name][category].append(None)
-                
-                # [NEW] Add trace_mapping info to metrics for extended data access
+                # Nếu có data, bổ sung thông tin trace file
                 trace_file = None
                 for task in tasks:
                     if Path(task[0]).stem == filename:
@@ -346,17 +345,23 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
                     metrics['trace_file'] = trace_file
                     metrics['trace_mapping'] = task_mapping_info.get(trace_file, {})
                 
+                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - OK")
                 results[app_name][category][cycle_index] = metrics
-                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {filename}")
+            else:
+                # Nếu metrics None (lỗi), giữ nguyên giá trị None tại index đó
+                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - FAILED/EMPTY")
+                results[app_name][category][cycle_index] = None
+
     finally:
         pool.close() 
         pool.join()  
     
+    # [FIX 2] KHÔNG lọc bỏ None. Giữ nguyên cấu trúc [Data, None, Data] để Excel vẽ đúng cột.
     cleaned_results = {}
     for app_name, categories in results.items():
         cleaned_results[app_name] = {
-            'entry': [m for m in categories['entry'] if m is not None],
-            'reentry': [m for m in categories['reentry'] if m is not None]
+            'entry': categories['entry'], # Giữ nguyên list gốc
+            'reentry': categories['reentry']
         }
     
     return cleaned_results
@@ -476,6 +481,7 @@ def create_excel_output(
             )
             
             dut_cycles = dut_results.get(app_name, {}).get(launch_type, [])
+            print(dut_cycles)
             ref_cycles = ref_results.get(app_name, {}).get(launch_type, [])
             
             if not dut_cycles and not ref_cycles:
@@ -631,8 +637,8 @@ def create_sheet(
     fmt_section_header = wb.add_format({
         "bold": True, 
         "align": "left",
-        "bg_color": "#000000",
-        "font_color": "#FFFFFF",
+        "bg_color": "#FFFFFF",
+        "font_color": "#000000",
         "border": 1,
         "border_color": "#000000"
     })
@@ -1063,9 +1069,11 @@ def create_sheet(
             diff = dut_avg - ref_avg
             # For memory, higher is better for Free/Available, so positive diff is good
             if "Free" in metric or "Available" in metric:
-                fmt_diff = fmt_diff_fast if diff > 0 else (fmt_diff_slow if diff < 0 else fmt_diff_normal)
+                # fmt_diff = fmt_diff_fast if diff > 0 else (fmt_diff_slow if diff < 0 else fmt_diff_normal)
+                fmt_diff = fmt_diff_normal
             else:
-                fmt_diff = fmt_diff_slow if diff > 0 else (fmt_diff_fast if diff < 0 else fmt_diff_normal)
+                # fmt_diff = fmt_diff_slow if diff > 0 else (fmt_diff_fast if diff < 0 else fmt_diff_normal)
+                fmt_diff = fmt_diff_normal
             ws.write(row_idx, diff_col, diff, fmt_diff)
         else:
             ws.write(row_idx, diff_col, "", fmt_val)
@@ -1073,21 +1081,93 @@ def create_sheet(
         row_idx += 1
     
     # ---------------------------------------------------------
-    # === LOADAPKASSETS SECTION (Placeholder) ===
+    # === LOADAPKASSETS SECTION (EXTENDED) ===
     # ---------------------------------------------------------
-    row_idx += 1  # Empty separator
     
-    ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "LOADAPKASSETS", fmt_section_header)
-    row_idx += 1
+    # 1. Thu thập dữ liệu trước
+    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in dut_cycles]
+    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in ref_cycles]
     
-    # Placeholder rows - to be implemented by user
-    loadapk_categories = ["system_server", "system_ui", "launching_app"]
-    for category in loadapk_categories:
-        ws.write(row_idx, 0, category, fmt_label)
-        # Fill empty cells with borders
-        for col in range(1, total_cols):
-            ws.write(row_idx, col, "", fmt_section_value)
+    target_categories = ["system_server", "system_ui", "launching_app"]
+    
+    # 2. Kiểm tra xem có bất kỳ dữ liệu nào không
+    has_loadapk_data = False
+    for cycle_data in all_dut_loadapk + all_ref_loadapk:
+        if isinstance(cycle_data, dict):
+            for cat in target_categories:
+                # Kiểm tra nếu category có list asset và list đó không rỗng
+                if cycle_data.get(cat):
+                    has_loadapk_data = True
+                    break
+        if has_loadapk_data: break
+    
+    # 3. Chỉ vẽ bảng nếu có dữ liệu
+    if has_loadapk_data:
+        row_idx += 1  # Dòng trống ngăn cách
+        
+        # Vẽ Header Section
+        ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "LOADAPKASSETS (>50ms)", fmt_section_header)
         row_idx += 1
+        
+        # Vẽ từng Category
+        for category in target_categories:
+            # Label Category
+            ws.write(row_idx, 0, category.title(), fmt_label)
+            
+            # Fill DUT Cycles
+            col_idx = 1
+            dut_sum_vals = []
+            for i in range(max_cycles):
+                val = 0.0
+                if i < len(all_dut_loadapk):
+                    cycle_data = all_dut_loadapk[i]
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        # TÍNH TỔNG: Cộng dồn thời gian
+                        val = sum(item.get('dur_ms', 0.0) for item in assets)
+                
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_section_value)
+                if val > 0: dut_sum_vals.append(val)
+                col_idx += 1
+            
+            # DUT Avg
+            dut_avg = sum(dut_sum_vals) / len(dut_sum_vals) if dut_sum_vals else 0.0
+            write_value_or_empty(ws, row_idx, col_idx, dut_avg, fmt_val)
+            col_idx += 1
+
+            # Fill REF Cycles
+            ref_sum_vals = []
+            for i in range(max_cycles):
+                val = 0.0
+                if i < len(all_ref_loadapk):
+                    cycle_data = all_ref_loadapk[i]
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        # TÍNH TỔNG
+                        val = sum(item.get('dur_ms', 0.0) for item in assets)
+                
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_section_value)
+                if val > 0: ref_sum_vals.append(val)
+                col_idx += 1
+            
+            # REF Avg
+            ref_avg = sum(ref_sum_vals) / len(ref_sum_vals) if ref_sum_vals else 0.0
+            write_value_or_empty(ws, row_idx, col_idx, ref_avg, fmt_val)
+            col_idx += 1
+            
+            # Diff
+            if dut_avg > 0 or ref_avg > 0:
+                diff = dut_avg - ref_avg
+                # Format màu sắc nếu chênh lệch lớn
+                fmt = fmt_diff_normal
+                if diff > 50: fmt = fmt_diff_slow
+                elif diff < -50: fmt = fmt_diff_fast
+                write_value_or_empty(ws, row_idx, col_idx, diff, fmt)
+            else:
+                ws.write(row_idx, col_idx, "", fmt_val)
+            
+            row_idx += 1
+
     
     # ---------------------------------------------------------
     # === ABNORMAL SECTION ===
@@ -1463,7 +1543,192 @@ def create_sheet(
     # Thread
     ws.set_column(5, 5, 40) # Thread Name (Process)
     ws.set_column(6, 8, 10) # Values
- 
+    
+
+    # ---------------------------------------------------------
+    # === PRIORITY STATICS TABLE (FULL & FINAL) ===
+    # ---------------------------------------------------------
+    row_idx += 3
+    
+    # 1. DEFINING FORMATS
+    # Header chính (Priority Statics) - Màu tím nhạt, chữ đậm, border
+    fmt_prio_main_title = wb.add_format({
+        "bold": True, "align": "center", "valign": "vcenter", 
+        "bg_color": "#D8BFD8", "border": 1, "border_color": "#000000", "font_size": 12
+    })
+    
+    # Header cột (DUT Cy1...)
+    fmt_prio_col_header = wb.add_format({
+        "bold": True, "align": "center", "bg_color": "#E6E6FA", "border": 1, "border_color": "#000000"
+    })
+    
+    # Category Row (bindApplication...) - Merge, bg xám, chữ đen/đậm
+    fmt_prio_cat_merge = wb.add_format({
+        "bold": True, "align": "left", "valign": "vcenter",
+        "bg_color": "#D3D3D3", "font_color": "#000000",
+        "border": 1, "border_color": "#000000"
+    })
+    
+    # Value Cell - Percentage
+    fmt_prio_val = wb.add_format({
+        "num_format": "0.00%", "align": "center", "border": 1, "border_color": "#000000"
+    }) 
+    
+    # Priority Label Cell (120, 98...)
+    fmt_prio_label = wb.add_format({
+        "align": "left", "bold": True, "border": 1, "border_color": "#000000"
+    })
+
+    # Frequency Label Cell (@1800MHz...) - Nghiêng, căn phải
+    fmt_prio_freq_label = wb.add_format({
+        "align": "right", "italic": True, "font_color": "#555555", 
+        "border": 1, "border_color": "#000000"
+    })
+
+    # 2. PREPARE DATA
+    all_dut_prio = [cycle.get("Priority_Data", {}) if cycle else {} for cycle in dut_cycles]
+    all_ref_prio = [cycle.get("Priority_Data", {}) if cycle else {} for cycle in ref_cycles]
+    
+    categories = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
+    
+    # Check if any data exists
+    has_prio_data = False
+    for cycle_data in all_dut_prio + all_ref_prio:
+        if cycle_data: has_prio_data = True; break
+    
+    if has_prio_data:
+        # Xác định cột cuối cùng của bảng
+        last_col = 1 + len(dut_cycles) + len(ref_cycles) - 1 
+        
+        # 3. DRAW MAIN TITLE (MERGED)
+        ws.merge_range(row_idx, 0, row_idx, last_col, "Priority Statics", fmt_prio_main_title)
+        row_idx += 1
+        
+        # 4. DRAW COLUMN HEADERS
+        ws.write(row_idx, 0, "Category/Priority", fmt_prio_col_header)
+        
+        col_idx = 1
+        for i in range(1, len(dut_cycles) + 1):
+            ws.write(row_idx, col_idx, f"DUT Cy{i}", fmt_prio_col_header)
+            col_idx += 1
+        
+        for i in range(1, len(ref_cycles) + 1):
+            ws.write(row_idx, col_idx, f"REF Cy{i}", fmt_prio_col_header)
+            col_idx += 1
+            
+        row_idx += 1
+        
+        # --- Helper Functions ---
+        def parse_prio_key(k_str):
+            """Parse key '120_1800' -> (120, 1800)"""
+            try:
+                if '_' in str(k_str):
+                    p, f = str(k_str).split('_')
+                    return int(p), int(f)
+                return int(k_str), 0
+            except:
+                return 0, 0
+
+        def get_category_total_time(c_data):
+            """Tổng thời gian chạy của cả category (Mẫu số)"""
+            return sum(c_data.values())
+
+        def get_prio_breakdown(c_data, target_prio):
+            """
+            Trả về: (Tổng thời gian của Priority, List các (freq, time) của priority đó)
+            """
+            total_p_time = 0.0
+            freq_list = []
+            for k, v in c_data.items():
+                p, f = parse_prio_key(k)
+                if p == target_prio:
+                    total_p_time += v
+                    if f > 0: # Chỉ add nếu có frequency hợp lệ
+                        freq_list.append((f, v))
+            
+            # Sort freq giảm dần (High freq first)
+            freq_list.sort(key=lambda x: x[0], reverse=True)
+            return total_p_time, freq_list
+
+        # 5. DRAW DATA BY CATEGORY
+        for category in categories:
+            # 5a. Tìm tất cả Priority ID xuất hiện trong Category này
+            all_seen_priorities = set()
+            
+            # Quét toàn bộ DUT và REF để lấy danh sách Priority duy nhất
+            for data_pool in [all_dut_prio, all_ref_prio]:
+                for cycle_data in data_pool:
+                    cat_data = cycle_data.get(category, {})
+                    for key in cat_data.keys():
+                        p_id, _ = parse_prio_key(key)
+                        if p_id > 0: all_seen_priorities.add(p_id)
+            
+            if not all_seen_priorities:
+                continue 
+                
+            sorted_priorities = sorted(list(all_seen_priorities), reverse=True) # Priority cao (số nhỏ) hoặc tùy ý
+            
+            # 5b. Vẽ Category Header (MERGED ROW)
+            ws.merge_range(row_idx, 0, row_idx, last_col, category, fmt_prio_cat_merge)
+            row_idx += 1
+            
+            # 5c. Vẽ từng Priority Group
+            for prio in sorted_priorities:
+                # --- A. DÒNG TỔNG PRIORITY (Vd: 120) ---
+                ws.write(row_idx, 0, str(prio), fmt_prio_label)
+                col_idx = 1
+                
+                # Fill DUT & REF (Total Prio %)
+                for pool in [all_dut_prio, all_ref_prio]:
+                    for i in range(len(dut_cycles)): # Assume symmetric cycle count or check len
+                        val = ""
+                        if i < len(pool):
+                            cycle_data = pool[i].get(category, {})
+                            if cycle_data:
+                                total_run = get_category_total_time(cycle_data)
+                                p_time, _ = get_prio_breakdown(cycle_data, prio)
+                                if total_run > 0 and p_time > 0:
+                                    val = p_time / total_run
+                        
+                        write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
+                        col_idx += 1
+                row_idx += 1
+                
+                # --- B. CÁC DÒNG FREQUENCY CON (Vd: @1800MHz) ---
+                # Tìm tập hợp Frequency của Priority này để vẽ
+                seen_freqs = set()
+                for pool in [all_dut_prio, all_ref_prio]:
+                    for cycle_data in pool:
+                        cat_data = cycle_data.get(category, {})
+                        _, f_list = get_prio_breakdown(cat_data, prio)
+                        for f, _ in f_list: seen_freqs.add(f)
+                
+                sorted_freqs = sorted(list(seen_freqs), reverse=True)
+                
+                for freq in sorted_freqs:
+                    ws.write(row_idx, 0, f"{freq}MHz", fmt_prio_freq_label)
+                    col_idx = 1
+                    
+                    # Fill DUT & REF (Freq %)
+                    for pool in [all_dut_prio, all_ref_prio]:
+                        for i in range(len(dut_cycles)):
+                            val = ""
+                            if i < len(pool):
+                                cycle_data = pool[i].get(category, {})
+                                if cycle_data:
+                                    total_run = get_category_total_time(cycle_data)
+                                    # Construct exact key
+                                    key = f"{prio}_{freq}"
+                                    f_time = cycle_data.get(key, 0.0)
+                                    
+                                    if total_run > 0 and f_time > 0:
+                                        val = f_time / total_run # % đóng góp của Freq này trong Tổng thời gian chạy
+                            
+                            write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
+                            col_idx += 1
+                    row_idx += 1
+
+
     # =============== Top Block I/O Table (MOVED TO POSITION 5) ================
     row_idx += 3
     
@@ -1513,7 +1778,8 @@ def create_sheet(
             # Tính Diff
             diff = dut_avg - ref_avg
             
-            lib_stats.append({
+            if (diff > 0):
+                lib_stats.append({
                 'name': lib_name,
                 'dut_times': dut_times,
                 'dut_avg': dut_avg,
@@ -1521,7 +1787,6 @@ def create_sheet(
                 'ref_avg': ref_avg,
                 'diff': diff
             })
-
         # ---------------------------------------------------------
         # BƯỚC 2: Sort theo Diff giảm dần (Cao xuống thấp)
         # ---------------------------------------------------------
@@ -1601,28 +1866,30 @@ def create_sheet(
             row_idx += 1
     
     
-    # === LoadApkAssets Table ===
+    # ---------------------------------------------------------
+    # === LoadApkAssets Table (UPDATED FOR CATEGORIES) ===
+    # ---------------------------------------------------------
     row_idx += 3
 
-    # Thu thập LoadApkAsset data từ tất cả cycles
-    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", []) if cycle else [] for cycle in dut_cycles]
-    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", []) if cycle else [] for cycle in ref_cycles]
+    # Thu thập data từ tất cả cycles
+    # Lưu ý: Mỗi cycle data bây giờ là Dict {'system_server': [], 'system_ui': [], ...}
+    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in dut_cycles]
+    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in ref_cycles]
 
-    # Tạo union set của tất cả LoadApkAsset names
-    all_loadapk_names = set()
-    for cycle_data in all_dut_loadapk:
-        for apk in cycle_data:
-            all_loadapk_names.add(apk['name'])
-    for cycle_data in all_ref_loadapk:
-        for apk in cycle_data:
-            all_loadapk_names.add(apk['name'])
-    
-    # print(all_loadapk_names)
-    # CHỈ VẼ BẢNG NẾU CÓ DATA
-    if all_loadapk_names:
-        # print("============================Start LoadApkAssets==============================")
-        sorted_loadapk_names = sorted(all_loadapk_names)
-        
+    # Các category cần hiển thị theo thứ tự
+    target_categories = ["system_server", "system_ui", "launching_app"]
+
+    # Kiểm tra xem có dữ liệu nào không để quyết định vẽ bảng
+    has_data = False
+    for cycle_data in all_dut_loadapk + all_ref_loadapk:
+        if not isinstance(cycle_data, dict): continue # Skip nếu data cũ/lỗi
+        for cat in target_categories:
+            if cycle_data.get(cat):
+                has_data = True
+                break
+        if has_data: break
+
+    if has_data:
         # === HEADER ROW ===
         ws.merge_range(row_idx, 0, row_idx, 0, "LoadApkAssets (>50ms)", fmt_blockio_header)
         
@@ -1637,81 +1904,71 @@ def create_sheet(
         
         # === SUB-HEADER ROW ===
         row_idx += 1
-        ws.write(row_idx, 0, "LoadApkAssets Name", fmt_blockio_header)
+        ws.write(row_idx, 0, "Category / Asset Name", fmt_blockio_header)
         
         col_idx = 1
-        for i in range(len(dut_cycles)):
+        for _ in range(len(dut_cycles)):
             ws.write(row_idx, col_idx, "(ms)", fmt_blockio_header)
             col_idx += 1
-        
-        for i in range(len(ref_cycles)):
+        for _ in range(len(ref_cycles)):
             ws.write(row_idx, col_idx, "(ms)", fmt_blockio_header)
             col_idx += 1
         
         ws.set_column(0, 0, 50)
-        ws.set_column(1, col_idx - 1, 12)
         
-        # === DATA ROWS - LOGIC ĐÚNG ===
+        # === DATA ROWS ===
         row_idx += 1
-        
-        # Tạo flat list của TẤT CẢ entries để phân bổ đúng
-        all_entries = []
-        for apk_name in sorted_loadapk_names:
-            for cycle_idx, cycle_data in enumerate(all_dut_loadapk + all_ref_loadapk):
-                for apk in cycle_data:
-                    if apk['name'] == apk_name:
-                        all_entries.append({
-                            'name': apk_name,
-                            'dur_ms': apk['dur_ms'],
-                            'cycle_idx': cycle_idx,
-                            'is_dut': cycle_idx < len(all_dut_loadapk)
-                        })
-        
-        # Group theo name và hiển thị
-        current_name = None
-        occurrence_num = 0
-        
-        for entry in all_entries:
-            if entry['name'] != current_name:
-                current_name = entry['name']
-                occurrence_num = 1
-            else:
-                occurrence_num += 1
+
+        for category in target_categories:
+            # 1. Thu thập tất cả tên Asset trong category này từ mọi cycle
+            cat_asset_names = set()
+            for cycle_data in all_dut_loadapk + all_ref_loadapk:
+                if isinstance(cycle_data, dict):
+                    assets = cycle_data.get(category, [])
+                    for a in assets:
+                        cat_asset_names.add(a['name'])
             
-            # Label
-            if occurrence_num > 1:
-                # label = f"{entry['name']} (#{occurrence_num})"
-                label = entry['name']
-            else:
-                label = entry['name']
-            
-            ws.write(row_idx, 0, label, fmt_label)
-            col_idx = 1
-            
-            # Fill data cho cycle tương ứng
-            cycle_offset = entry['cycle_idx']
-            if entry['is_dut']:
-                actual_cycle = cycle_offset
-            else:
-                actual_cycle = cycle_offset - len(all_dut_loadapk)
-            
-            # DUT cycles - để trống tất cả trừ cycle chứa entry này
-            for i in range(len(all_dut_loadapk)):
-                if entry['is_dut'] and i == actual_cycle:
-                    write_value_or_empty(ws, row_idx, col_idx, entry['dur_ms'], fmt_blockio_val)
-                else:
-                    ws.write(row_idx, col_idx, "", fmt_val)
-                col_idx += 1
-            
-            # REF cycles - tương tự
-            for i in range(len(all_ref_loadapk)):
-                if not entry['is_dut'] and i == actual_cycle:
-                    write_value_or_empty(ws, row_idx, col_idx, entry['dur_ms'], fmt_blockio_val)
-                else:
-                    ws.write(row_idx, col_idx, "", fmt_val)
-                col_idx += 1
-            
+            sorted_assets = sorted(list(cat_asset_names))
+
+            if not sorted_assets:
+                continue
+
+            # 2. Hiển thị tên Category (In đậm, Background màu tối hoặc khác biệt)
+            # Merge hết các cột để làm tiêu đề ngăn cách
+            total_cols_table = 1 + len(dut_cycles) + len(ref_cycles)
+            ws.merge_range(row_idx, 0, row_idx, total_cols_table - 1, category.title(), fmt_section_header)
             row_idx += 1
+
+            # 3. Vẽ từng Asset trong category đó
+            for asset_name in sorted_assets:
+                ws.write(row_idx, 0, asset_name, fmt_label)
+                col_idx = 1
+
+                # Fill DUT Cycles
+                for cycle_data in all_dut_loadapk:
+                    val = ""
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        found_item = next((x for x in assets if x['name'] == asset_name), None)
+                        if found_item:
+                            val = found_item['dur_ms']
+                    
+                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                    col_idx += 1
+                
+                # Fill REF Cycles
+                for cycle_data in all_ref_loadapk:
+                    val = ""
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        found_item = next((x for x in assets if x['name'] == asset_name), None)
+                        if found_item:
+                            val = found_item['dur_ms']
+                    
+                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                    col_idx += 1
+                
+                row_idx += 1
 
     # ---------------------------------------------------------
     # === Statistics Table (Binder Transaction, etc.) ===
@@ -1865,6 +2122,590 @@ def extract_device_code(header_title):
 
 
 # ---------------------------------------------------------------------------
+# JSON Export
+# ---------------------------------------------------------------------------
+
+def export_avg_to_json(
+    dut_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
+    ref_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
+    output_folder: str,
+    dut_device_code: str,
+    ref_device_code: str,
+    dut_folder_path: str = "",
+    ref_folder_path: str = ""
+) -> None:
+    """
+    Xuất toàn bộ Avg metrics ra file JSON.
+    - data_dut.json: Chứa tất cả Avg của DUT
+    - data_ref.json: Chứa tất cả Avg của REF
+    
+    Bao gồm tất cả các bảng: sequence, extend, top CPU, priority, block I/O
+    Args:
+        dut_folder_path: Đường dẫn DUT folder để parse dumpstate
+        ref_folder_path: Đường dẫn REF folder để parse dumpstate
+    """
+    
+    def calculate_avg_metrics(cycles: List[Dict[str, Any]], app_name: str, launch_type: str, folder_path: str = "") -> Dict[str, Any]:
+        """Tính toán Avg cho tất cả metrics của một app/launch_type"""
+        if not cycles:
+            return {}
+        
+        valid_cycles = [c for c in cycles if c is not None]
+        if not valid_cycles:
+            return {}
+        
+        result = {}
+        
+        # ========================
+        # 1. SEQUENCE METRICS (App Execution Time, Running, Runnable, etc.)
+        # ========================
+        sequence_metrics = [
+            "App Execution Time", "Touch Down ~ Start Proc", "Start Proc",
+            "Start Proc ~ ActivityThreadMain", "Activity Thread Main",
+            "ActivityThreadMain ~ bindApplication", "Bind Application",
+            "bindApplication ~ activityStart", "Touch Duration", "Touch Up ~ Activity Start",
+            "Activity Start", "activityStart ~ activityResume", "Activity Resume",
+            "ActivityResume ~ Choreographer", "Choreographer",
+            "Choreographer ~ ActivityIdle", "ActivityIdle", "ActivityIdle ~ Animating end",
+            "Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
+            # Camera specific
+            "onCreate", "OpenCameraRequest", "onResume", "StartPreviewRequest"
+        ]
+        
+        sequence_data = {}
+        for metric in sequence_metrics:
+            values = []
+            for cycle in valid_cycles:
+                val = cycle.get(metric, 0.0)
+                if val and val > 0:
+                    values.append(float(val))
+            if values:
+                sequence_data[metric] = round(sum(values) / len(values), 3)
+        
+        if sequence_data:
+            result["sequence"] = sequence_data
+        
+        # ========================
+        # 2. EXTEND METRICS (Memory, LoadApkAssets summary, Abnormal)
+        # ========================
+        extend_data = {}
+        
+        # --- 2.1 LoadApkAssets categories (tổng thời gian mỗi category) ---
+        loadapk_categories = ["system_server", "system_ui", "launching_app"]
+        loadapk_data = {}
+        
+        for category in loadapk_categories:
+            values = []
+            for cycle in valid_cycles:
+                cycle_loadapk = cycle.get("LoadApkAsset_Data", {})
+                if isinstance(cycle_loadapk, dict):
+                    assets = cycle_loadapk.get(category, [])
+                    total = sum(item.get('dur_ms', 0.0) for item in assets)
+                    if total > 0:
+                        values.append(total)
+            if values:
+                loadapk_data[category] = round(sum(values) / len(values), 3)
+        
+        if loadapk_data:
+            extend_data["loadapkassets"] = loadapk_data
+        
+        # --- 2.2 Memory Data (từ meminfo và dumpstate) ---
+        if folder_path:
+            memory_data = {}
+            mem_free_values = []
+            mem_available_values = []
+            app_pss_values = []
+            pageboostd_values = []
+            
+            for i, cycle in enumerate(valid_cycles):
+                # Lấy memory data từ file meminfo
+                mem_data = get_memory_data_for_cycle(folder_path, app_name, i)
+                if mem_data:
+                    mem_free = mem_data.get('MemFree', 0.0)
+                    mem_available = mem_data.get('MemAvailable', 0.0)
+                    if mem_free > 0:
+                        mem_free_values.append(mem_free)
+                    if mem_available > 0:
+                        mem_available_values.append(mem_available)
+                
+                # Lấy PSS và Pageboostd từ dumpstate
+                trace_mapping_info = cycle.get('trace_mapping', {})
+                bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                if bugreport_path:
+                    dumpstate_content = find_dumpstate_content(bugreport_path)
+                    if dumpstate_content:
+                        pss = parse_pss_for_app(dumpstate_content, app_name)
+                        pageboostd = parse_pageboostd_for_app(dumpstate_content, app_name)
+                        if pss and pss > 0:
+                            app_pss_values.append(pss)
+                        if pageboostd and pageboostd > 0:
+                            pageboostd_values.append(pageboostd)
+            
+            if mem_free_values:
+                memory_data["MemFree_KB"] = round(sum(mem_free_values) / len(mem_free_values), 2)
+            if mem_available_values:
+                memory_data["MemAvailable_KB"] = round(sum(mem_available_values) / len(mem_available_values), 2)
+            if app_pss_values:
+                memory_data["App_PSS_KB"] = round(sum(app_pss_values) / len(app_pss_values), 2)
+            if pageboostd_values:
+                memory_data["Pageboostd_KB"] = round(sum(pageboostd_values) / len(pageboostd_values), 2)
+            
+            if memory_data:
+                extend_data["memory"] = memory_data
+        
+        # --- 2.3 Abnormal Info (từ dumpstate) ---
+        if folder_path:
+            abnormal_info = {}
+            uptime_values = []
+            start_reasons_all = []
+            kill_reasons_all = []
+            crash_counts = []
+            compiler_types = []
+            
+            for cycle in valid_cycles:
+                trace_mapping_info = cycle.get('trace_mapping', {})
+                bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
+                if bugreport_path:
+                    dumpstate_content = find_dumpstate_content(bugreport_path)
+                    if dumpstate_content:
+                        # Uptime
+                        uptime = parse_uptime(dumpstate_content)
+                        if uptime and uptime > 0:
+                            uptime_values.append(uptime)
+                        
+                        # Start reason
+                        start_reason = parse_start_reasons(dumpstate_content, app_name)
+                        if start_reason:
+                            start_reasons_all.append(start_reason)
+                        
+                        # Kill reason
+                        kill_reasons = parse_kill_reasons(dumpstate_content, app_name)
+                        if kill_reasons:
+                            kill_reasons_all.extend(kill_reasons)
+                        
+                        # Crash count
+                        crash_count = count_crashes(dumpstate_content)
+                        if crash_count and crash_count > 0:
+                            crash_counts.append(crash_count)
+                        
+                        # Compiler type
+                        compiler = parse_compiler_type(dumpstate_content, app_name)
+                        if compiler:
+                            compiler_types.append(compiler)
+            
+            if uptime_values:
+                abnormal_info["uptime_minutes"] = round(sum(uptime_values) / len(uptime_values), 2)
+            if start_reasons_all:
+                # Lấy giá trị xuất hiện nhiều nhất
+                from collections import Counter
+                most_common = Counter(start_reasons_all).most_common(1)
+                if most_common:
+                    abnormal_info["start_reason"] = most_common[0][0]
+            if kill_reasons_all:
+                # Unique kill reasons
+                abnormal_info["kill_reasons"] = list(set(kill_reasons_all))
+            if crash_counts:
+                abnormal_info["crash_count_avg"] = round(sum(crash_counts) / len(crash_counts), 1)
+            if compiler_types:
+                from collections import Counter
+                most_common = Counter(compiler_types).most_common(1)
+                if most_common:
+                    abnormal_info["compiler"] = most_common[0][0]
+            
+            if abnormal_info:
+                extend_data["abnormal"] = abnormal_info
+        
+        # --- 2.4 Abnormal Process Start Overlap ---
+        # Thu thập process start overlap từ Abnormal_Process_Data và Background_Process_States
+        all_abnormal_procs = set()
+        all_bg_procs = set()
+        
+        for cycle in valid_cycles:
+            # Abnormal process data
+            abnormal = cycle.get("Abnormal_Process_Data", [])
+            for p in abnormal:
+                name = p.get('proc_name', '')
+                if name and name != 'Unknown':
+                    all_abnormal_procs.add(name)
+            
+            # Background process states
+            bg = cycle.get("Background_Process_States", [])
+            for p in bg:
+                name = p.get('Thread name', '')
+                if name and name != 'Unknown':
+                    all_bg_procs.add(name)
+        
+        if all_abnormal_procs:
+            extend_data["abnormal_process_start"] = sorted(list(all_abnormal_procs))
+        
+        if all_bg_procs:
+            extend_data["background_process_active"] = sorted(list(all_bg_procs))
+        
+        if extend_data:
+            result["extend"] = extend_data
+        
+        # ========================
+        # 3. TOP CPU (Process và Thread)
+        # ========================
+        cpu_process_data = {}
+        cpu_thread_data = {}
+        
+        # Gộp tất cả process từ các cycles
+        all_proc_by_name = defaultdict(list)
+        for cycle in valid_cycles:
+            procs = cycle.get("CPU_Process_Data", [])
+            for p in procs:
+                name = p.get('dumpstate_name') or p.get('sql_name', 'Unknown')
+                dur = p.get('dur_ms', 0.0)
+                if dur > 0:
+                    all_proc_by_name[name].append(dur)
+        
+        # Tính Avg và lấy Top 10
+        proc_avgs = []
+        for name, values in all_proc_by_name.items():
+            avg = sum(values) / len(values)
+            proc_avgs.append((name, round(avg, 3)))
+        
+        proc_avgs.sort(key=lambda x: x[1], reverse=True)
+        cpu_process_data = {name: val for name, val in proc_avgs[:10]}
+        
+        # Tương tự cho Thread
+        all_thread_by_name = defaultdict(list)
+        for cycle in valid_cycles:
+            threads = cycle.get("CPU_Thread_Data", [])
+            for t in threads:
+                name = f"{t.get('thread_name', 'Unknown')} ({t.get('proc_name', 'Unknown')})"
+                dur = t.get('dur_ms', 0.0)
+                if dur > 0:
+                    all_thread_by_name[name].append(dur)
+        
+        thread_avgs = []
+        for name, values in all_thread_by_name.items():
+            avg = sum(values) / len(values)
+            thread_avgs.append((name, round(avg, 3)))
+        
+        thread_avgs.sort(key=lambda x: x[1], reverse=True)
+        cpu_thread_data = {name: val for name, val in thread_avgs[:10]}
+        
+        if cpu_process_data or cpu_thread_data:
+            result["top_cpu"] = {
+                "process": cpu_process_data,
+                "thread": cpu_thread_data
+            }
+        
+        # ========================
+        # 4. PRIORITY STATICS
+        # ========================
+        priority_data = {}
+        categories = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
+        
+        for category in categories:
+            cat_prio_sums = defaultdict(list)
+            
+            for cycle in valid_cycles:
+                prio_data = cycle.get("Priority_Data", {})
+                cat_data = prio_data.get(category, {})
+                if cat_data:
+                    total = sum(cat_data.values())
+                    if total > 0:
+                        # Gộp theo priority
+                        prio_totals = defaultdict(float)
+                        for key, val in cat_data.items():
+                            parts = str(key).split('_')
+                            prio_id = parts[0]
+                            prio_totals[prio_id] += val
+                        
+                        for prio_id, prio_val in prio_totals.items():
+                            pct = prio_val / total
+                            cat_prio_sums[prio_id].append(pct)
+            
+            if cat_prio_sums:
+                category_result = {}
+                for prio_id, pcts in cat_prio_sums.items():
+                    avg_pct = sum(pcts) / len(pcts)
+                    category_result[prio_id] = round(avg_pct * 100, 2)  # Convert to %
+                priority_data[category] = category_result
+        
+        if priority_data:
+            result["priority"] = priority_data
+        
+        # ========================
+        # 5. BLOCK I/O
+        # ========================
+        block_io_data = {}
+        all_lib_times = defaultdict(list)
+        
+        for cycle in valid_cycles:
+            bio = cycle.get("Block_IO_Data", [])
+            for item in bio:
+                name = item.get('libraryName', 'Unknown')
+                dur = item.get('timeTotal_ms', 0.0)
+                if dur > 0:
+                    all_lib_times[name].append(dur)
+        
+        lib_avgs = []
+        for name, values in all_lib_times.items():
+            avg = sum(values) / len(values)
+            lib_avgs.append((name, round(avg, 3)))
+        
+        lib_avgs.sort(key=lambda x: x[1], reverse=True)
+        block_io_data = {name: val for name, val in lib_avgs[:20]}  # Top 20
+        
+        if block_io_data:
+            result["block_io"] = block_io_data
+        
+        # ========================
+        # 6. BINDER TRANSACTION
+        # ========================
+        binder_dur_values = []
+        binder_count_values = []
+        
+        for cycle in valid_cycles:
+            binder = cycle.get("Binder_Transaction_Data", {})
+            dur = binder.get('duration_ms', 0.0)
+            count = binder.get('count', 0)
+            if dur > 0:
+                binder_dur_values.append(dur)
+            if count > 0:
+                binder_count_values.append(count)
+        
+        if binder_dur_values or binder_count_values:
+            result["binder_transaction"] = {
+                "duration_ms": round(sum(binder_dur_values) / len(binder_dur_values), 3) if binder_dur_values else 0,
+                "count": int(sum(binder_count_values) / len(binder_count_values)) if binder_count_values else 0
+            }
+        
+        return result
+    
+    # =====================
+    # BUILD JSON DATA
+    # =====================
+    timestamp = datetime.datetime.now().isoformat()
+    
+    # DUT Data
+    dut_json = {
+        "device_code": dut_device_code,
+        "timestamp": timestamp,
+        "apps": {}
+    }
+    
+    for app_name, categories in dut_results.items():
+        app_data = {}
+        for launch_type in ["entry", "reentry"]:
+            cycles = categories.get(launch_type, [])
+            metrics = calculate_avg_metrics(cycles, app_name, launch_type, dut_folder_path)
+            if metrics:
+                app_data[launch_type] = metrics
+        if app_data:
+            dut_json["apps"][app_name] = app_data
+    
+    # REF Data
+    ref_json = {
+        "device_code": ref_device_code,
+        "timestamp": timestamp,
+        "apps": {}
+    }
+    
+    for app_name, categories in ref_results.items():
+        app_data = {}
+        for launch_type in ["entry", "reentry"]:
+            cycles = categories.get(launch_type, [])
+            metrics = calculate_avg_metrics(cycles, app_name, launch_type, ref_folder_path)
+            if metrics:
+                app_data[launch_type] = metrics
+        if app_data:
+            ref_json["apps"][app_name] = app_data
+    
+    # =====================
+    # WRITE FILES
+    # =====================
+    # Tạo folder Output trong DUT folder
+    output_dir = os.path.join(output_folder, "Output")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Write data_dut.json
+    dut_json_path = os.path.join(output_dir, "data_dut.json")
+    with open(dut_json_path, 'w', encoding='utf-8') as f:
+        json.dump(dut_json, f, indent=2, ensure_ascii=False)
+    print(f"\n Created: {dut_json_path}")
+    
+    # Write data_ref.json
+    ref_json_path = os.path.join(output_dir, "data_ref.json")
+    with open(ref_json_path, 'w', encoding='utf-8') as f:
+        json.dump(ref_json, f, indent=2, ensure_ascii=False)
+    print(f" Created: {ref_json_path}")
+    
+    # Generate analysis_input.json (combined for Agent analysis)
+    analysis_input = generate_analysis_input(dut_json, ref_json)
+    analysis_path = os.path.join(output_dir, "analysis_input.json")
+    with open(analysis_path, 'w', encoding='utf-8') as f:
+        json.dump(analysis_input, f, indent=2, ensure_ascii=False)
+    print(f" Created: {analysis_path}")
+
+
+def generate_analysis_input(dut_json: Dict, ref_json: Dict) -> Dict:
+    """
+    Generate combined analysis input JSON for Agent to analyze.
+    Contains calculated diffs and context for easy diagnosis.
+    """
+    result = {
+        "_description": "Combined analysis input for performance diagnosis",
+        "_workflow": "Use with .agent/workflows/analyze-performance.md",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "device_codes": {
+            "dut": dut_json.get("device_code", "Unknown"),
+            "ref": ref_json.get("device_code", "Unknown")
+        },
+        "apps": {}
+    }
+    
+    # Get all app names from both DUT and REF
+    all_apps = set(dut_json.get("apps", {}).keys()) | set(ref_json.get("apps", {}).keys())
+    
+    for app_name in sorted(all_apps):
+        dut_app = dut_json.get("apps", {}).get(app_name, {})
+        ref_app = ref_json.get("apps", {}).get(app_name, {})
+        
+        app_analysis = {}
+        
+        for launch_type in ["entry", "reentry"]:
+            dut_data = dut_app.get(launch_type, {})
+            ref_data = ref_app.get(launch_type, {})
+            
+            if not dut_data and not ref_data:
+                continue
+            
+            launch_analysis = {
+                "state_diff": {},
+                "context": {},
+                "top_cpu": {"process": {}, "thread": {}},
+                "priority": {},
+                "block_io": {},
+                "extend": {},
+                "binder_transaction": {}
+            }
+            
+            # ========== STATE DIFF (Running, Runnable, etc.) ==========
+            state_metrics = ["Running", "Runnable", "Uninterruptible Sleep", "Sleeping", "App Execution Time"]
+            dut_seq = dut_data.get("sequence", {})
+            ref_seq = ref_data.get("sequence", {})
+            
+            for metric in state_metrics:
+                dut_val = dut_seq.get(metric, 0)
+                ref_val = ref_seq.get(metric, 0)
+                diff = round(dut_val - ref_val, 3)
+                
+                launch_analysis["state_diff"][metric] = {
+                    "dut": dut_val,
+                    "ref": ref_val,
+                    "diff": diff,
+                    "issue": diff > 10  # Flag if diff > 10ms
+                }
+            
+            # ========== CONTEXT ==========
+            # TODO: Add warm/cold count when available in data
+            launch_analysis["context"] = {
+                "dut_device": dut_json.get("device_code", "Unknown"),
+                "ref_device": ref_json.get("device_code", "Unknown"),
+                "launch_type": launch_type
+            }
+            
+            # ========== TOP CPU DIFF ==========
+            dut_cpu = dut_data.get("top_cpu", {})
+            ref_cpu = ref_data.get("top_cpu", {})
+            
+            # Process diff
+            all_procs = set(dut_cpu.get("process", {}).keys()) | set(ref_cpu.get("process", {}).keys())
+            proc_diffs = []
+            for proc in all_procs:
+                dut_val = dut_cpu.get("process", {}).get(proc, 0)
+                ref_val = ref_cpu.get("process", {}).get(proc, 0)
+                diff = round(dut_val - ref_val, 3)
+                proc_diffs.append({"name": proc, "dut": dut_val, "ref": ref_val, "diff": diff})
+            
+            proc_diffs.sort(key=lambda x: x["diff"], reverse=True)
+            launch_analysis["top_cpu"]["process"] = proc_diffs[:5]  # Top 5 by diff
+            
+            # Thread diff
+            all_threads = set(dut_cpu.get("thread", {}).keys()) | set(ref_cpu.get("thread", {}).keys())
+            thread_diffs = []
+            for thread in all_threads:
+                dut_val = dut_cpu.get("thread", {}).get(thread, 0)
+                ref_val = ref_cpu.get("thread", {}).get(thread, 0)
+                diff = round(dut_val - ref_val, 3)
+                thread_diffs.append({"name": thread, "dut": dut_val, "ref": ref_val, "diff": diff})
+            
+            thread_diffs.sort(key=lambda x: x["diff"], reverse=True)
+            launch_analysis["top_cpu"]["thread"] = thread_diffs[:5]
+            
+            # ========== PRIORITY COMPARISON ==========
+            dut_prio = dut_data.get("priority", {})
+            ref_prio = ref_data.get("priority", {})
+            
+            for category in ["bindApplication", "activityStart", "activityResume", "Choreographer"]:
+                dut_cat = dut_prio.get(category, {})
+                ref_cat = ref_prio.get(category, {})
+                
+                if dut_cat or ref_cat:
+                    all_prios = set(dut_cat.keys()) | set(ref_cat.keys())
+                    prio_comp = {}
+                    for prio in all_prios:
+                        dut_pct = dut_cat.get(prio, 0)
+                        ref_pct = ref_cat.get(prio, 0)
+                        prio_comp[prio] = {
+                            "dut_pct": dut_pct,
+                            "ref_pct": ref_pct,
+                            "diff_pct": round(dut_pct - ref_pct, 2)
+                        }
+                    launch_analysis["priority"][category] = prio_comp
+            
+            # ========== BLOCK I/O DIFF ==========
+            dut_bio = dut_data.get("block_io", {})
+            ref_bio = ref_data.get("block_io", {})
+            
+            all_libs = set(dut_bio.keys()) | set(ref_bio.keys())
+            bio_diffs = []
+            for lib in all_libs:
+                dut_val = dut_bio.get(lib, 0)
+                ref_val = ref_bio.get(lib, 0)
+                diff = round(dut_val - ref_val, 3)
+                bio_diffs.append({"name": lib, "dut": dut_val, "ref": ref_val, "diff": diff})
+            
+            bio_diffs.sort(key=lambda x: x["diff"], reverse=True)
+            launch_analysis["block_io"] = bio_diffs[:10]  # Top 10
+            
+            # ========== EXTEND (LoadApkAssets, Memory, Abnormal) ==========
+            launch_analysis["extend"] = {
+                "dut": dut_data.get("extend", {}),
+                "ref": ref_data.get("extend", {})
+            }
+            
+            # ========== BINDER TRANSACTION ==========
+            dut_binder = dut_data.get("binder_transaction", {})
+            ref_binder = ref_data.get("binder_transaction", {})
+            
+            launch_analysis["binder_transaction"] = {
+                "duration_ms": {
+                    "dut": dut_binder.get("duration_ms", 0),
+                    "ref": ref_binder.get("duration_ms", 0),
+                    "diff": round(dut_binder.get("duration_ms", 0) - ref_binder.get("duration_ms", 0), 3)
+                },
+                "count": {
+                    "dut": dut_binder.get("count", 0),
+                    "ref": ref_binder.get("count", 0),
+                    "diff": dut_binder.get("count", 0) - ref_binder.get("count", 0)
+                }
+            }
+            
+            app_analysis[launch_type] = launch_analysis
+        
+        if app_analysis:
+            result["apps"][app_name] = app_analysis
+    
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1927,6 +2768,10 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     print("\n[3/3] Creating Excel files...")
     output_folder = dut_folder  # Lưu vào thư mục DUT
     create_excel_output(dut_results, ref_results, output_folder, header_title, dut_device_code, ref_device_code, dut_folder, ref_folder)
+    
+    # Export JSON data
+    print("\n[4/4] Exporting JSON data...")
+    export_avg_to_json(dut_results, ref_results, dut_folder, dut_device_code, ref_device_code, dut_folder, ref_folder)
     
     end_time = datetime.datetime.now()
     elapsed = (end_time - start_time).total_seconds()
