@@ -38,6 +38,7 @@ from typing import Dict, Optional, Any, Tuple, List
 from collections import defaultdict
 
 import xlsxwriter
+import json
 
 from perfetto.trace_processor.api import TraceProcessor, TraceProcessorConfig
 from sql_query import *
@@ -75,9 +76,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -1544,29 +1545,26 @@ def create_sheet(
     
 
     # ---------------------------------------------------------
-    # === PRIORITY STATICS TABLE (NEW STRUCTURE) ===
+    # === PRIORITY STATICS TABLE (FULL & FINAL) ===
     # ---------------------------------------------------------
     row_idx += 3
     
-    # 1. FORMATS
+    # 1. DEFINING FORMATS
     # Header chính (Priority Statics) - Màu tím nhạt, chữ đậm, border
     fmt_prio_main_title = wb.add_format({
         "bold": True, "align": "center", "valign": "vcenter", 
         "bg_color": "#D8BFD8", "border": 1, "border_color": "#000000", "font_size": 12
     })
     
-    # Format mới cho dòng Frequency (nhỏ hơn, nghiêng)
-    fmt_prio_freq_label = wb.add_format({"align": "right", "italic": True, "font_color": "#555555", "border": 1, "border_color": "#000000"})
-
     # Header cột (DUT Cy1...)
     fmt_prio_col_header = wb.add_format({
         "bold": True, "align": "center", "bg_color": "#E6E6FA", "border": 1, "border_color": "#000000"
     })
     
-    # Category Row (bindApplication...) - Merge, bg xám/đen, chữ đen/đậm
+    # Category Row (bindApplication...) - Merge, bg xám, chữ đen/đậm
     fmt_prio_cat_merge = wb.add_format({
         "bold": True, "align": "left", "valign": "vcenter",
-        "bg_color": "#D3D3D3", "font_color": "#000000", # Xám đậm, chữ đen
+        "bg_color": "#D3D3D3", "font_color": "#000000",
         "border": 1, "border_color": "#000000"
     })
     
@@ -1575,9 +1573,15 @@ def create_sheet(
         "num_format": "0.00%", "align": "center", "border": 1, "border_color": "#000000"
     }) 
     
-    # Priority Label Cell (100, 110...)
+    # Priority Label Cell (120, 98...)
     fmt_prio_label = wb.add_format({
-        "align": "left", "border": 1, "border_color": "#000000"
+        "align": "left", "bold": True, "border": 1, "border_color": "#000000"
+    })
+
+    # Frequency Label Cell (@1800MHz...) - Nghiêng, căn phải
+    fmt_prio_freq_label = wb.add_format({
+        "align": "right", "italic": True, "font_color": "#555555", 
+        "border": 1, "border_color": "#000000"
     })
 
     # 2. PREPARE DATA
@@ -1593,10 +1597,9 @@ def create_sheet(
     
     if has_prio_data:
         # Xác định cột cuối cùng của bảng
-        last_col = 1 + len(dut_cycles) + len(ref_cycles) - 1 # (Category col + DUT cols + REF cols) - 1 index
+        last_col = 1 + len(dut_cycles) + len(ref_cycles) - 1 
         
         # 3. DRAW MAIN TITLE (MERGED)
-        # Merge dòng đầu tiên từ cột A đến hết
         ws.merge_range(row_idx, 0, row_idx, last_col, "Priority Statics", fmt_prio_main_title)
         row_idx += 1
         
@@ -1614,71 +1617,115 @@ def create_sheet(
             
         row_idx += 1
         
+        # --- Helper Functions ---
+        def parse_prio_key(k_str):
+            """Parse key '120_1800' -> (120, 1800)"""
+            try:
+                if '_' in str(k_str):
+                    p, f = str(k_str).split('_')
+                    return int(p), int(f)
+                return int(k_str), 0
+            except:
+                return 0, 0
+
+        def get_category_total_time(c_data):
+            """Tổng thời gian chạy của cả category (Mẫu số)"""
+            return sum(c_data.values())
+
+        def get_prio_breakdown(c_data, target_prio):
+            """
+            Trả về: (Tổng thời gian của Priority, List các (freq, time) của priority đó)
+            """
+            total_p_time = 0.0
+            freq_list = []
+            for k, v in c_data.items():
+                p, f = parse_prio_key(k)
+                if p == target_prio:
+                    total_p_time += v
+                    if f > 0: # Chỉ add nếu có frequency hợp lệ
+                        freq_list.append((f, v))
+            
+            # Sort freq giảm dần (High freq first)
+            freq_list.sort(key=lambda x: x[0], reverse=True)
+            return total_p_time, freq_list
+
         # 5. DRAW DATA BY CATEGORY
         for category in categories:
-            # 5a. Tìm tất cả Priority ID xuất hiện trong Category này (Union set)
+            # 5a. Tìm tất cả Priority ID xuất hiện trong Category này
             all_seen_priorities = set()
             
-            # Quét DUT
-            for prio_map in all_dut_prio:
-                if category in prio_map:
-                    all_seen_priorities.update(prio_map[category].keys())
-            # Quét REF
-            for prio_map in all_ref_prio:
-                if category in prio_map:
-                    all_seen_priorities.update(prio_map[category].keys())
+            # Quét toàn bộ DUT và REF để lấy danh sách Priority duy nhất
+            for data_pool in [all_dut_prio, all_ref_prio]:
+                for cycle_data in data_pool:
+                    cat_data = cycle_data.get(category, {})
+                    for key in cat_data.keys():
+                        p_id, _ = parse_prio_key(key)
+                        if p_id > 0: all_seen_priorities.add(p_id)
             
             if not all_seen_priorities:
                 continue 
                 
-            sorted_priorities = sorted(list(all_seen_priorities))
+            sorted_priorities = sorted(list(all_seen_priorities), reverse=True) # Priority cao (số nhỏ) hoặc tùy ý
             
             # 5b. Vẽ Category Header (MERGED ROW)
-            # Merge từ cột A đến hết bảng, nền xám, chữ đen
             ws.merge_range(row_idx, 0, row_idx, last_col, category, fmt_prio_cat_merge)
             row_idx += 1
             
-            # 5c. Vẽ từng dòng Priority
+            # 5c. Vẽ từng Priority Group
             for prio in sorted_priorities:
+                # --- A. DÒNG TỔNG PRIORITY (Vd: 120) ---
                 ws.write(row_idx, 0, str(prio), fmt_prio_label)
                 col_idx = 1
                 
-                # --- Fill DUT Cycles ---
-                for i in range(max_cycles):
-                    val = ""
-                    if i < len(all_dut_prio):
-                        cycle_data = all_dut_prio[i]
-                        cat_data = cycle_data.get(category, {})
+                # Fill DUT & REF (Total Prio %)
+                for pool in [all_dut_prio, all_ref_prio]:
+                    for i in range(len(dut_cycles)): # Assume symmetric cycle count or check len
+                        val = ""
+                        if i < len(pool):
+                            cycle_data = pool[i].get(category, {})
+                            if cycle_data:
+                                total_run = get_category_total_time(cycle_data)
+                                p_time, _ = get_prio_breakdown(cycle_data, prio)
+                                if total_run > 0 and p_time > 0:
+                                    val = p_time / total_run
                         
-                        if cat_data:
-                            # Tính tổng thời gian chạy trong cycle này để làm mẫu số
-                            total_run_ms = sum(cat_data.values())
-                            prio_ms = cat_data.get(prio, 0.0)
-                            
-                            if total_run_ms > 0 and prio_ms > 0:
-                                val = prio_ms / total_run_ms # Calculate Percentage
-                    
-                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
-                    col_idx += 1
-                    
-                # --- Fill REF Cycles ---
-                for i in range(max_cycles):
-                    val = ""
-                    if i < len(all_ref_prio):
-                        cycle_data = all_ref_prio[i]
-                        cat_data = cycle_data.get(category, {})
-                        
-                        if cat_data:
-                            total_run_ms = sum(cat_data.values())
-                            prio_ms = cat_data.get(prio, 0.0)
-                            
-                            if total_run_ms > 0 and prio_ms > 0:
-                                val = prio_ms / total_run_ms
-                    
-                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
-                    col_idx += 1
-                    
+                        write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
+                        col_idx += 1
                 row_idx += 1
+                
+                # --- B. CÁC DÒNG FREQUENCY CON (Vd: @1800MHz) ---
+                # Tìm tập hợp Frequency của Priority này để vẽ
+                seen_freqs = set()
+                for pool in [all_dut_prio, all_ref_prio]:
+                    for cycle_data in pool:
+                        cat_data = cycle_data.get(category, {})
+                        _, f_list = get_prio_breakdown(cat_data, prio)
+                        for f, _ in f_list: seen_freqs.add(f)
+                
+                sorted_freqs = sorted(list(seen_freqs), reverse=True)
+                
+                for freq in sorted_freqs:
+                    ws.write(row_idx, 0, f"{freq}MHz", fmt_prio_freq_label)
+                    col_idx = 1
+                    
+                    # Fill DUT & REF (Freq %)
+                    for pool in [all_dut_prio, all_ref_prio]:
+                        for i in range(len(dut_cycles)):
+                            val = ""
+                            if i < len(pool):
+                                cycle_data = pool[i].get(category, {})
+                                if cycle_data:
+                                    total_run = get_category_total_time(cycle_data)
+                                    # Construct exact key
+                                    key = f"{prio}_{freq}"
+                                    f_time = cycle_data.get(key, 0.0)
+                                    
+                                    if total_run > 0 and f_time > 0:
+                                        val = f_time / total_run # % đóng góp của Freq này trong Tổng thời gian chạy
+                            
+                            write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
+                            col_idx += 1
+                    row_idx += 1
 
 
     # =============== Top Block I/O Table (MOVED TO POSITION 5) ================
@@ -2074,6 +2121,307 @@ def extract_device_code(header_title):
 
 
 # ---------------------------------------------------------------------------
+# JSON Export
+# ---------------------------------------------------------------------------
+
+def export_avg_to_json(
+    dut_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
+    ref_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
+    output_folder: str,
+    dut_device_code: str,
+    ref_device_code: str,
+    dut_folder_path: str = "",
+    ref_folder_path: str = ""
+) -> None:
+    """
+    Xuất metrics ra file JSON.
+    [UPDATED] 
+    - Priority: Chuyển đổi dữ liệu từ ms sang % (giống Excel).
+    - Logic naming Top Process/Thread giống Excel.
+    """
+    
+    def calculate_metrics_for_app(cycles: List[Dict[str, Any]], app_name: str, launch_type: str, folder_path: str = "") -> Dict[str, Any]:
+        """Tính toán metrics cho một app/launch_type (UPDATED - Detailed per Cycle)"""
+        if not cycles: return {}
+        
+        # Lấy danh sách các cycle hợp lệ (không bị None)
+        valid_cycles_with_idx = [(i, c) for i, c in enumerate(cycles) if c is not None]
+        if not valid_cycles_with_idx: return {}
+        
+        valid_cycles = [c for _, c in valid_cycles_with_idx]
+        result = {}
+
+        # ========================
+        # [UPDATED] 0. STATE (Per Cycle)
+        # ========================
+        # Tạo list trạng thái tương ứng với số lượng cycle
+        # Ví dụ: ["Cold", "Cold", "Cold"] hoặc ["Warm", "Warm", "Warm"]
+        current_state = "Cold" if launch_type == "entry" else "Warm"
+        result["State"] = [current_state for _ in valid_cycles]
+        
+        # ========================
+        # 1. SEQUENCE METRICS (AVG)
+        # ========================
+        sequence_metrics = [
+            "App Execution Time", "Touch Down ~ Start Proc", "Start Proc",
+            "Start Proc ~ ActivityThreadMain", "Activity Thread Main",
+            "ActivityThreadMain ~ bindApplication", "Bind Application",
+            "bindApplication ~ activityStart", "Touch Duration", "Touch Up ~ Activity Start",
+            "Activity Start", "activityStart ~ activityResume", "Activity Resume",
+            "ActivityResume ~ Choreographer", "Choreographer",
+            "Choreographer ~ ActivityIdle", "ActivityIdle", "ActivityIdle ~ Animating end",
+            "Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
+            "onCreate", "OpenCameraRequest", "onResume", "StartPreviewRequest"
+        ]
+        
+        sequence_data = {}
+        for metric in sequence_metrics:
+            values = []
+            for cycle in valid_cycles:
+                val = cycle.get(metric, 0.0)
+                if val and val > 0: values.append(float(val))
+            if values: sequence_data[metric] = round(sum(values) / len(values), 3)
+        if sequence_data: result["sequence"] = sequence_data
+        
+        # ========================
+        # 2. EXTEND METRICS
+        # ========================
+        extend_data = {}
+
+        # [UPDATED] 2.1 START PROCESS ABNORMAL (List of Lists per Cycle)
+        # Output format: [["com.google.android.gms"], [], ["com.facebook.katana", "com.android.vending"]]
+        abnormal_process_list = []
+        
+        for cycle in valid_cycles:
+            cycle_procs = []
+            bg_states = cycle.get("Abnormal_Process_Data", [])
+            # bg_states là list các dict: [{'process': 'name', 'state': 'R'}, ...]
+            if bg_states:
+                for item in bg_states:
+                    p_name = item.get('proc_name', '')
+                    if p_name:
+                        cycle_procs.append(p_name)
+            
+            # Thêm list process của cycle này vào list tổng (kể cả list rỗng)
+            abnormal_process_list.append(cycle_procs)
+            
+        extend_data["start_process_abnormal"] = abnormal_process_list
+
+        # 2.2 LoadApkAssets
+        loadapk_categories = ["system_server", "system_ui", "launching_app"]
+        loadapk_data = {}
+        for category in loadapk_categories:
+            values = []
+            for cycle in valid_cycles:
+                cycle_loadapk = cycle.get("LoadApkAsset_Data", {})
+                if isinstance(cycle_loadapk, dict):
+                    assets = cycle_loadapk.get(category, [])
+                    total = sum(item.get('dur_ms', 0.0) for item in assets)
+                    if total > 0: values.append(total)
+            if values: loadapk_data[category] = round(sum(values) / len(values), 3)
+        if loadapk_data: extend_data["loadapkassets"] = loadapk_data
+        
+        # 2.3 Memory
+        if folder_path:
+            memory_data = {}
+            mem_free_vals, mem_avail_vals, pss_vals, pb_vals = [], [], [], []
+            
+            for idx, cycle in valid_cycles_with_idx:
+                mem = get_memory_data_for_cycle(folder_path, app_name, idx)
+                if mem:
+                    if mem.get('MemFree', 0) > 0: mem_free_vals.append(mem['MemFree'])
+                    if mem.get('MemAvailable', 0) > 0: mem_avail_vals.append(mem['MemAvailable'])
+                
+                trace_map = cycle.get('trace_mapping', {})
+                br_path = trace_map.get('bugreport_path', '') if trace_map else ''
+                if br_path:
+                    content = find_dumpstate_content(br_path)
+                    if content:
+                        pss = parse_pss_for_app(content, app_name)
+                        if pss > 0: pss_vals.append(pss)
+                        pb = parse_pageboostd_for_app(content, app_name)
+                        if pb > 0: pb_vals.append(pb)
+
+            if mem_free_vals: memory_data["MemFree_KB"] = round(sum(mem_free_vals)/len(mem_free_vals), 2)
+            if mem_avail_vals: memory_data["MemAvailable_KB"] = round(sum(mem_avail_vals)/len(mem_avail_vals), 2)
+            if pss_vals: memory_data["App_PSS_KB"] = round(sum(pss_vals)/len(pss_vals), 2)
+            if pb_vals: memory_data["Pageboostd_KB"] = round(sum(pb_vals)/len(pb_vals), 2)
+            if memory_data: extend_data["memory"] = memory_data
+            
+        # 2.4 Abnormal
+        if folder_path:
+            abnormal_info = {}
+            uptime_vals, kill_reasons, crash_counts, compilers = [], [], [], []
+            
+            for _, cycle in valid_cycles_with_idx:
+                trace_map = cycle.get('trace_mapping', {})
+                br_path = trace_map.get('bugreport_path', '') if trace_map else ''
+                if br_path:
+                    content = find_dumpstate_content(br_path)
+                    if content:
+                        ut = parse_uptime(content)
+                        if ut > 0: uptime_vals.append(ut)
+                        kr = parse_kill_reasons(content, app_name)
+                        if kr: kill_reasons.extend(kr)
+                        cc = count_crashes(content)
+                        if cc > 0: crash_counts.append(cc)
+                        ct = parse_compiler_type(content, app_name)
+                        if ct: compilers.append(ct)
+
+            if uptime_vals: abnormal_info["uptime_minutes"] = round(sum(uptime_vals)/len(uptime_vals), 2)
+            if kill_reasons: abnormal_info["kill_reasons"] = list(set(kill_reasons))
+            if crash_counts: abnormal_info["crash_count_avg"] = round(sum(crash_counts)/len(crash_counts), 1)
+            if compilers:
+                from collections import Counter
+                abnormal_info["compiler"] = Counter(compilers).most_common(1)[0][0]
+            if abnormal_info: extend_data["abnormal"] = abnormal_info
+        
+        if extend_data: result["extend"] = extend_data
+
+        # =========================================================
+        # 3. TOP CPU (BY CYCLE)
+        # =========================================================
+        cpu_cycles_data = []
+        for idx, cycle in valid_cycles_with_idx:
+            procs = sorted(cycle.get("CPU_Process_Data", []), key=lambda x: x.get('dur_ms', 0), reverse=True)[:10]
+            proc_list = []
+            for p in procs:
+                s_name = p.get('sql_name', 'Unknown')
+                d_name = p.get('dumpstate_name')
+                name = d_name if (s_name.startswith("PID-") and d_name) else s_name
+                proc_list.append({"name": name, "val": p.get('dur_ms', 0)})
+            
+            threads = sorted(cycle.get("CPU_Thread_Data", []), key=lambda x: x.get('dur_ms', 0), reverse=True)[:10]
+            thread_list = []
+            for t in threads:
+                name = f"{t.get('thread_name', 'Unknown')} ({t.get('proc_name', 'Unknown')})"
+                thread_list.append({"name": name, "val": t.get('dur_ms', 0)})
+                
+            cpu_cycles_data.append({"cycle": idx+1, "process": proc_list, "thread": thread_list})
+        if cpu_cycles_data: result["top_cpu_by_cycle"] = cpu_cycles_data
+        
+        # =========================================================
+        # 4. PRIORITY STATICS (BY CYCLE)
+        # =========================================================
+        priority_cycles_data = []
+        prio_categories = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
+        
+        for idx, cycle in valid_cycles_with_idx:
+            prio_data = cycle.get("Priority_Data", {})
+            cycle_result = {}
+            has_data = False
+            
+            for cat in prio_categories:
+                if cat in prio_data and prio_data[cat]:
+                    raw_map = prio_data[cat]
+                    total_dur = sum(raw_map.values())
+                    
+                    if total_dur > 0:
+                        prio_acc = defaultdict(float)
+                        freq_acc = defaultdict(float)
+                        
+                        for key, val_ms in raw_map.items():
+                            parts = str(key).split('_')
+                            if len(parts) >= 1:
+                                p_id = parts[0]
+                                prio_acc[p_id] += val_ms
+                                if len(parts) >= 2 and parts[1] != "0":
+                                    freq_acc[parts[1]] += val_ms
+
+                        prio_pct = {k: round((v/total_dur)*100, 2) for k, v in prio_acc.items()}
+                        freq_pct = {k: round((v/total_dur)*100, 2) for k, v in freq_acc.items()}
+                        
+                        cycle_result[cat] = {"priority": prio_pct, "frequency": freq_pct}
+                        has_data = True
+            
+            if has_data: priority_cycles_data.append({"cycle": idx + 1, "data": cycle_result})
+        if priority_cycles_data: result["priority_by_cycle"] = priority_cycles_data
+
+        # 5. BLOCK I/O
+        bio_cycles = []
+        for idx, cycle in valid_cycles_with_idx:
+            bio = sorted(cycle.get("Block_IO_Data", []), key=lambda x: x.get('timeTotal_ms', 0), reverse=True)[:10]
+            bio_list = [{"name": x.get('libraryName', 'Unknown'), "val": x.get('timeTotal_ms', 0)} for x in bio]
+            if bio_list: bio_cycles.append({"cycle": idx+1, "data": bio_list})
+        if bio_cycles: result["block_io_by_cycle"] = bio_cycles
+        
+        # 6. BINDER
+        b_durs, b_counts = [], []
+        for cycle in valid_cycles:
+            b = cycle.get("Binder_Transaction_Data", {})
+            if b.get('duration_ms', 0) > 0: b_durs.append(b['duration_ms'])
+            if b.get('count', 0) > 0: b_counts.append(b['count'])
+        if b_durs or b_counts:
+            result["binder_transaction"] = {
+                "duration_ms": round(sum(b_durs)/len(b_durs), 3) if b_durs else 0,
+                "count": int(sum(b_counts)/len(b_counts)) if b_counts else 0
+            }
+
+        return result
+
+    
+    # =====================
+    # BUILD JSON DATA
+    # =====================
+    timestamp = datetime.datetime.now().isoformat()
+    
+    # DUT Data
+    dut_json = {
+        "device_code": dut_device_code,
+        "timestamp": timestamp,
+        "type": "DUT",
+        "apps": {}
+    }
+    
+    for app_name, categories in dut_results.items():
+        app_data = {}
+        for launch_type in ["entry", "reentry"]:
+            cycles = categories.get(launch_type, [])
+            metrics = calculate_metrics_for_app(cycles, app_name, launch_type, dut_folder_path)
+            if metrics:
+                app_data[launch_type] = metrics
+        if app_data:
+            dut_json["apps"][app_name] = app_data
+    
+    # REF Data
+    ref_json = {
+        "device_code": ref_device_code,
+        "timestamp": timestamp,
+        "type": "REF",
+        "apps": {}
+    }
+    
+    for app_name, categories in ref_results.items():
+        app_data = {}
+        for launch_type in ["entry", "reentry"]:
+            cycles = categories.get(launch_type, [])
+            metrics = calculate_metrics_for_app(cycles, app_name, launch_type, ref_folder_path)
+            if metrics:
+                app_data[launch_type] = metrics
+        if app_data:
+            ref_json["apps"][app_name] = app_data
+    
+    # =====================
+    # WRITE FILES
+    # =====================
+    output_dir = os.path.join(output_folder, "Output")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Write data_dut.json
+    dut_json_path = os.path.join(output_dir, "data_dut.json")
+    with open(dut_json_path, 'w', encoding='utf-8') as f:
+        json.dump(dut_json, f, indent=2, ensure_ascii=False)
+    print(f"\n Created: {dut_json_path}")
+    
+    # Write data_ref.json
+    ref_json_path = os.path.join(output_dir, "data_ref.json")
+    with open(ref_json_path, 'w', encoding='utf-8') as f:
+        json.dump(ref_json, f, indent=2, ensure_ascii=False)
+    print(f" Created: {ref_json_path}")
+
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -2136,6 +2484,10 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     print("\n[3/3] Creating Excel files...")
     output_folder = dut_folder  # Lưu vào thư mục DUT
     create_excel_output(dut_results, ref_results, output_folder, header_title, dut_device_code, ref_device_code, dut_folder, ref_folder)
+    
+    # Export JSON data
+    print("\n[4/4] Exporting JSON data...")
+    export_avg_to_json(dut_results, ref_results, dut_folder, dut_device_code, ref_device_code, dut_folder, ref_folder)
     
     end_time = datetime.datetime.now()
     elapsed = (end_time - start_time).total_seconds()

@@ -1022,54 +1022,153 @@ def get_background_process_states(tp: TraceProcessor, start_ts: int, end_ts: int
 
     return results
 
+
 # ==========================Priority static =========================
-def get_priority_distribution(tp: TraceProcessor, tid: int, start_ts: int, end_ts: int) -> Dict[int, float]:
+def get_priority_distribution(tp: TraceProcessor, tid: int, start_ts: int, end_ts: int) -> Dict[str, float]:
     """
-    Tính thống kê Priority của thread (TID) trong khoảng thời gian [start_ts, end_ts].
-    Sử dụng SPAN_JOIN để cắt chính xác các sched_slice nằm trong khung giờ này.
-    
-    Returns: Dict {priority (int): duration_ms (float)}
+    Tính thống kê Priority và Frequency.
+    [FIXED] Sửa lỗi SQL truy vấn bảng Counter (tính dur tự động, lấy cpu từ track).
     """
     if not tid or not start_ts or not end_ts or start_ts >= end_ts:
         return {}
     
     duration = end_ts - start_ts
     
-    # 1. Tạo View Interval
-    tp.query(f"DROP VIEW IF EXISTS span_interval; CREATE VIEW span_interval AS SELECT {start_ts} as ts, {duration} as dur;")
-    
-    # 2. Tạo View Sched Slice của Thread đó
-    # Cần tìm utid từ tid trước
-    tp.query(f"DROP VIEW IF EXISTS target_thread_sched; CREATE VIEW target_thread_sched AS SELECT s.ts, s.dur, s.priority FROM sched_slice s JOIN thread t ON s.utid = t.utid WHERE t.tid = {tid};")
-    
-    # 3. Span Join để lấy intersection
-    tp.query("DROP TABLE IF EXISTS prio_span_result; CREATE VIRTUAL TABLE prio_span_result USING SPAN_JOIN(span_interval, target_thread_sched);")
-    
-    # 4. Group by Priority và Sum duration
-    sql = """
+    # Clean up
+    tp.query("DROP TABLE IF EXISTS freq_prio_span; DROP TABLE IF EXISTS sched_in_window; DROP VIEW IF EXISTS target_freq; DROP VIEW IF EXISTS target_sched; DROP VIEW IF EXISTS span_window;")
+
+    # --- QUERY 1: Lấy Priority + Frequency ---
+    # Lưu ý: Cần tính toán cột 'dur' cho bảng counter bằng hàm LEAD
+    sql_full = f"""
+    -- 1. Window
+    CREATE VIEW span_window AS SELECT {start_ts} as ts, {duration} as dur;
+
+    -- 2. Sched Slice
+    CREATE VIEW target_sched AS 
+    SELECT s.ts, s.dur, s.priority, s.cpu
+    FROM sched_slice s
+    JOIN thread t ON s.utid = t.utid
+    WHERE t.tid = {tid};
+
+    -- 3. Frequency (FIXED)
+    -- Counter không có dur, phải tính bằng (ts kế tiếp - ts hiện tại)
+    -- Counter không có cpu, phải lấy từ cpu_counter_track
+    CREATE VIEW target_freq AS
     SELECT 
-        priority,
-        SUM(dur) as total_dur
-    FROM prio_span_result
-    GROUP BY priority
-    ORDER BY total_dur DESC;
+        c.ts, 
+        LEAD(c.ts, 1, (SELECT end_ts FROM trace_bounds)) OVER (PARTITION BY c.track_id ORDER BY c.ts) - c.ts AS dur,
+        CAST(c.value AS INT) as freq_val,
+        t.cpu
+    FROM counter c
+    JOIN cpu_counter_track t ON c.track_id = t.id
+    WHERE t.name LIKE '%cpufreq%'; 
+
+    -- 4. SPAN JOIN 1: Cắt Sched theo Window
+    CREATE VIRTUAL TABLE sched_in_window USING SPAN_JOIN(span_window, target_sched);
+    
+    -- 5. SPAN JOIN 2: Join với Freq theo CPU
+    CREATE VIRTUAL TABLE freq_prio_span USING SPAN_JOIN(
+        sched_in_window PARTITIONED cpu, 
+        target_freq PARTITIONED cpu
+    );
+
+    SELECT priority, freq_val, SUM(dur) as total_dur
+    FROM freq_prio_span 
+    WHERE dur > 0
+    GROUP BY priority, freq_val;
+    """
+    
+    df = None
+    try:
+        df = query_df(tp, sql_full)
+    except Exception as e:
+        print(f"  [SQL Error Prio+Freq] {e}")
+        df = None
+
+    result = {}
+    
+    # Nếu thành công -> Trả về Priority + Frequency
+    if df is not None and not df.empty:
+        for _, row in df.iterrows():
+            prio = int(row['priority'])
+            # Frequency thường là kHz, chia 1000 ra MHz
+            freq_val = row['freq_val']
+            freq_mhz = int(freq_val / 1000) if freq_val > 10000 else int(freq_val) # Xử lý nếu đơn vị khác lạ
+            
+            dur_ms = float(row['total_dur']) / 1e6
+            result[f"{prio}_{freq_mhz}"] = dur_ms
+        
+        # Cleanup
+        tp.query("DROP TABLE IF EXISTS freq_prio_span; DROP TABLE IF EXISTS sched_in_window; DROP VIEW IF EXISTS target_freq; DROP VIEW IF EXISTS target_sched; DROP VIEW IF EXISTS span_window;")
+        return result
+
+    # --- QUERY 2 (FALLBACK): Nếu lỗi hoặc không có Freq, chỉ lấy Priority ---
+    # print(f"  [Fallback] No frequency data for TID {tid}, getting Priority only.")
+    
+    tp.query("DROP TABLE IF EXISTS freq_prio_span; DROP TABLE IF EXISTS sched_in_window; DROP VIEW IF EXISTS target_freq; DROP VIEW IF EXISTS target_sched; DROP VIEW IF EXISTS span_window;")
+    
+    sql_simple = f"""
+    CREATE VIEW span_window AS SELECT {start_ts} as ts, {duration} as dur;
+    
+    CREATE VIEW target_sched AS 
+    SELECT s.ts, s.dur, s.priority
+    FROM sched_slice s JOIN thread t ON s.utid = t.utid
+    WHERE t.tid = {tid};
+    
+    CREATE VIRTUAL TABLE prio_span_simple USING SPAN_JOIN(span_window, target_sched);
+    
+    SELECT priority, SUM(dur) as total_dur
+    FROM prio_span_simple GROUP BY priority;
+    """
+    
+    df_simple = query_df(tp, sql_simple)
+    if df_simple is not None and not df_simple.empty:
+        for _, row in df_simple.iterrows():
+            prio = int(row['priority'])
+            dur_ms = float(row['total_dur']) / 1e6
+            result[f"{prio}_0"] = dur_ms # 0 = No Freq
+            
+    tp.query("DROP TABLE IF EXISTS prio_span_simple; DROP VIEW IF EXISTS target_sched; DROP VIEW IF EXISTS span_window;")
+    
+    return result
+# -------------------------------------------------------------------
+# ===================== Layout depth ================================
+# -------------------------------------------------------------------
+
+def get_layout_depth_slices(tp: TraceProcessor, tid: int, start_ts: int, end_ts: int, max_depth: int = 6) -> Dict[int, List[str]]:
+    """
+    Lấy danh sách các Slice Name trên Main Thread, phân nhóm theo Depth.
+    Returns: Dict { 0: ['name1', 'name2'], 1: ['name3'] ... }
+    """
+    if not tid or not start_ts or not end_ts or start_ts >= end_ts:
+        return {}
+
+    # Query lấy name và depth của các slice nằm trọn hoặc một phần trong khoảng thời gian
+    # Chỉ lấy slice của Main Thread (join thread_track)
+    sql = f"""
+    SELECT s.name, s.depth
+    FROM slice s
+    JOIN thread_track t ON s.track_id = t.id
+    WHERE t.tid = {tid}
+    AND s.ts + s.dur >= {start_ts} 
+    AND s.ts <= {end_ts}
+    AND s.depth <= {max_depth}
+    ORDER BY s.depth, s.ts
     """
     
     df = query_df(tp, sql)
     
-    # Cleanup
-    tp.query("DROP TABLE IF EXISTS prio_span_result; DROP VIEW IF EXISTS target_thread_sched; DROP VIEW IF EXISTS span_interval;")
+    result = {d: [] for d in range(max_depth + 1)}
     
-    result = {}
     if df is not None and not df.empty:
         for _, row in df.iterrows():
-            prio = int(row['priority'])
-            dur_ms = float(row['total_dur']) / 1e6 # Convert ns to ms
-            result[prio] = dur_ms
-            
+            depth = int(row['depth'])
+            name = str(row['name'])
+            # Chỉ thêm vào nếu depth nằm trong range quản lý
+            if depth <= max_depth:
+                result[depth].append(name)
+                
     return result
-
-
 
 # -------------------------------------------------------------------
 # 5. MAIN ANALYSIS LOGIC
@@ -1190,6 +1289,9 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
             app_pkg = "com.sec.android.app.launcher" 
         else:
             print(f"Không tìm được launching:... trong trace {trace_path}")
+            raise RuntimeError(f"Không tìm được launching:... trong trace {trace_path}")
+            # return {}
+            
 
     # 2. Identify App Process (UPID/PID)
     # - Recent: Process chính chứa Resume/Choreographer thường là Launcher
