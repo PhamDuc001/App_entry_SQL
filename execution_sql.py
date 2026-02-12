@@ -76,9 +76,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -1727,6 +1727,115 @@ def create_sheet(
                             col_idx += 1
                     row_idx += 1
 
+
+    # # ---------------------------------------------------------
+    # # === LAYOUT ANALYSIS (UNIQUE SLICES) (NEW) ===
+    # # ---------------------------------------------------------
+    # row_idx += 3
+    
+    # # Formats
+    # fmt_layout_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFDAB9", "border": 1, "border_color": "#000000"}) # Peach Puff
+    # fmt_layout_cat = wb.add_format({"bold": True, "align": "left", "bg_color": "#808080", "font_color": "#FFFFFF", "border": 1}) # Dark Grey
+    # fmt_layout_depth = wb.add_format({"bold": True, "align": "left", "indent": 1, "bg_color": "#F0F8FF", "border": 1}) # Alice Blue
+    # fmt_layout_val = wb.add_format({"align": "left", "text_wrap": True, "valign": "top", "border": 1, "font_size": 9}) # Wrap text cho dễ đọc
+
+    # # Prepare Data
+    # all_dut_layout = [cycle.get("Layout_Data", {}) if cycle else {} for cycle in dut_cycles]
+    # all_ref_layout = [cycle.get("Layout_Data", {}) if cycle else {} for cycle in ref_cycles]
+    
+    # layout_cats = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
+    # max_depth_check = 6
+    
+    # # Check data exists
+    # has_layout_data = False
+    # for d in all_dut_layout + all_ref_layout:
+    #     if d: has_layout_data = True; break
+        
+    # if has_layout_data:
+    #     # 1. Header Structure
+    #     ws.merge_range(row_idx, 0, row_idx, 0, "Unique Layout Analysis (Set Diff)", fmt_layout_header)
+    #     col_idx = 1
+    #     for i in range(len(dut_cycles)):
+    #         ws.write(row_idx, col_idx, f"DUT Cy{i+1} (Unique)", fmt_layout_header)
+    #         col_idx += 1
+    #     for i in range(len(ref_cycles)):
+    #         ws.write(row_idx, col_idx, f"REF Cy{i+1} (Unique)", fmt_layout_header)
+    #         col_idx += 1
+    #     row_idx += 1
+        
+    #     # 2. Loop Categories
+    #     for cat in layout_cats:
+    #         # Draw Category Header (Merged)
+    #         last_col = 1 + len(dut_cycles) + len(ref_cycles) - 1
+    #         ws.merge_range(row_idx, 0, row_idx, last_col, cat, fmt_layout_cat)
+    #         row_idx += 1
+            
+    #         # 3. Loop Depths
+    #         for depth in range(max_depth_check + 1):
+    #             ws.write(row_idx, 0, f"Depth {depth}", fmt_layout_depth)
+    #             col_idx = 1
+                
+    #             # Để so sánh, ta cần dữ liệu của cả DUT và REF tại cycle i.
+    #             # Giả sử so sánh cặp: DUT Cy1 vs REF Cy1. 
+    #             # Nếu thiếu 1 bên (vd REF không có Cy3), thì bên còn lại coi như Unique toàn bộ.
+                
+    #             # --- FILL DUT COLUMNS ---
+    #             for i in range(len(dut_cycles)):
+    #                 val_str = ""
+    #                 if i < len(all_dut_layout):
+    #                     dut_slices = []
+    #                     if all_dut_layout[i].get(cat):
+    #                         dut_slices = all_dut_layout[i][cat].get(depth, [])
+                        
+    #                     # Lấy REF tương ứng để compare
+    #                     ref_slices = []
+    #                     if i < len(all_ref_layout) and all_ref_layout[i].get(cat):
+    #                         ref_slices = all_ref_layout[i][cat].get(depth, [])
+                            
+    #                     # Logic: DUT Unique = DUT - REF
+    #                     dut_set = set(dut_slices)
+    #                     ref_set = set(ref_slices)
+                        
+    #                     diff = dut_set - ref_set
+                        
+    #                     if diff:
+    #                         # Convert back to list and sort for readability
+    #                         val_str = ", ".join(sorted(list(diff)))
+    #                     elif not dut_set and not ref_set:
+    #                         val_str = "" # Cả 2 đều trống
+    #                     elif not diff:
+    #                         val_str = "" # Giống hệt nhau (hoặc DUT là tập con của REF)
+
+    #                 ws.write(row_idx, col_idx, val_str, fmt_layout_val)
+    #                 col_idx += 1
+                    
+    #             # --- FILL REF COLUMNS ---
+    #             for i in range(len(ref_cycles)):
+    #                 val_str = ""
+    #                 if i < len(all_ref_layout):
+    #                     ref_slices = []
+    #                     if all_ref_layout[i].get(cat):
+    #                         ref_slices = all_ref_layout[i][cat].get(depth, [])
+                            
+    #                     # Lấy DUT tương ứng để compare
+    #                     dut_slices = []
+    #                     if i < len(all_dut_layout) and all_dut_layout[i].get(cat):
+    #                         dut_slices = all_dut_layout[i][cat].get(depth, [])
+                            
+    #                     # Logic: REF Unique = REF - DUT
+    #                     dut_set = set(dut_slices)
+    #                     ref_set = set(ref_slices)
+                        
+    #                     diff = ref_set - dut_set
+                        
+    #                     if diff:
+    #                         val_str = ", ".join(sorted(list(diff)))
+
+    #                 ws.write(row_idx, col_idx, val_str, fmt_layout_val)
+    #                 col_idx += 1
+                
+    #             # Tăng row sau mỗi Depth
+    #             row_idx += 1
 
     # =============== Top Block I/O Table (MOVED TO POSITION 5) ================
     row_idx += 3
