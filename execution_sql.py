@@ -76,9 +76,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -108,6 +108,7 @@ TARGET_APPS = [
     "clock",
     "contact",
     "calendar",
+    "calender",
     "calculator",
     "gallery",
     "message",
@@ -134,6 +135,11 @@ COLD_ONLY_KEYS = {
 WARM_ONLY_KEYS = {
     "Touch Duration",
     "Touch Up ~ Activity Start"
+}
+
+# App name normalization map - fix common typos/misspellings
+APP_NAME_NORMALIZATION = {
+    "calender": "calendar",  # Fix "calender" → "calendar"
 }
 
 # ---------------------------------------------------------------------------
@@ -177,6 +183,12 @@ def group_traces_by_app(trace_files: List[str], target_apps: List[str] = None) -
         if len(parts) >= 2:
             raw_app_name = parts[-1]
             app_name = raw_app_name.lower()
+            
+            # [FIX STEP 1] Normalize app name (fix typos like "calender" → "calendar")
+            if app_name in APP_NAME_NORMALIZATION:
+                original_name = app_name
+                app_name = APP_NAME_NORMALIZATION[app_name]
+                print(f"  [NORMALIZED] '{original_name}' → '{app_name}'")
             
             # NEW: Check if app_name contains any target keyword
             matched_keyword = None
@@ -2351,10 +2363,10 @@ def export_avg_to_json(
                         pb = parse_pageboostd_for_app(content, app_name)
                         if pb > 0: pb_vals.append(pb)
 
-            if mem_free_vals: memory_data["MemFree_KB"] = round(sum(mem_free_vals)/len(mem_free_vals), 2)
-            if mem_avail_vals: memory_data["MemAvailable_KB"] = round(sum(mem_avail_vals)/len(mem_avail_vals), 2)
-            if pss_vals: memory_data["App_PSS_KB"] = round(sum(pss_vals)/len(pss_vals), 2)
-            if pb_vals: memory_data["Pageboostd_KB"] = round(sum(pb_vals)/len(pb_vals), 2)
+            if mem_free_vals: memory_data["MemFree_MB"] = round(sum(mem_free_vals)/len(mem_free_vals), 2)
+            if mem_avail_vals: memory_data["MemAvailable_MB"] = round(sum(mem_avail_vals)/len(mem_avail_vals), 2)
+            if pss_vals: memory_data["App_PSS_MB"] = round(sum(pss_vals)/len(pss_vals), 2)
+            if pb_vals: memory_data["Pageboostd_MB"] = round(sum(pb_vals)/len(pb_vals), 2)
             if memory_data: extend_data["memory"] = memory_data
             
         # 2.4 Abnormal
