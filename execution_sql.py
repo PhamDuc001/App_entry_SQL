@@ -79,9 +79,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -144,6 +144,8 @@ WARM_ONLY_KEYS = {
 APP_NAME_NORMALIZATION = {
     "calender": "calendar",  # Fix "calender" → "calendar"
 }
+
+CACHE_VERSION = "1.0"  # Tăng lên "1.1", "2.0"... 
 
 # ---------------------------------------------------------------------------
 # Helper functions and analyze_trace 
@@ -2549,12 +2551,12 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
                 cached_data = cache_content["data"]
                 
                 # CASE 1: Giống hệt nhau (Khớp 100%)
-                if current_targets == cached_targets:
+                if current_targets == cached_targets and cache_content.get("version") == CACHE_VERSION:
                     print(f"  -> [{label}] Target apps exactly matched! Loading from cache ...")
                     return cached_data
                 
                 # CASE 2: Yêu cầu hiện tại là TẬP CON của Cache (Ví dụ: Cache có ALL, user chỉ cần Gallery)
-                elif current_targets is not None:
+                elif current_targets is not None and cache_content.get("version") == CACHE_VERSION:
                     # Nếu Cache lưu ALL (None), hoặc Cache chứa đủ các app đang yêu cầu
                     if cached_targets is None or set(current_targets).issubset(set(cached_targets)):
                         print(f"  -> [{label}] Requested apps {current_targets} are available in Cache!")
@@ -2583,6 +2585,7 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
     # LƯU CACHE
     try:
         cache_content_to_save = {
+            "version": CACHE_VERSION,
             "target_apps": current_targets,
             "data": results
         }
