@@ -45,14 +45,14 @@ class Config:
     }
     MAX_RAW_LOG_LENGTH = 100
     FILE_BUFFER_SIZE = 65536
-    PSS_DIFF_THRESHOLD = 10  # MB threshold for PSS difference reporting
+    PSS_DIFF_THRESHOLD = 100  # MB threshold for PSS difference reporting
     IO_DIFF_THRESHOLD = 600   # MB threshold for I/O difference highlighting
     DEFAULT_RAM_SIZE_GB = 8   # Default RAM size in GB
     DEFAULT_PSS_THRESHOLD_MB = 800  # Default PSS threshold in MB for 8GB RAM
     RAM_TO_PSS_THRESHOLD_MAP = {
-        6: 100,   # 500MB threshold for devices with less than 6GB RAM
-        8: 100,   # 800MB threshold for devices with 6-8GB RAM
-        12: 100, # 1GB threshold for devices with more than 8GB RAM (using 12GB as key for 8GB+ devices)
+        6: 500,   # 500MB threshold for devices with less than 6GB RAM
+        8: 800,   # 800MB threshold for devices with 6-8GB RAM
+        12: 1024, # 1GB threshold for devices with more than 8GB RAM (using 12GB as key for 8GB+ devices)
     }
     
     @classmethod
@@ -88,8 +88,6 @@ FATAL_PATTERN = re.compile(r"FATAL EXCEPTION: (.+?)(?:\s+pid\s+(\d+))?")
 
 # I/O patterns
 IO_PATTERN = re.compile(r"(Read_top|Write_top)\(KB\):\s*(.*)")
-IO_PROCESS_PATTERN = re.compile(r"([^(]+)\((?:pid\s+\d+,)?\s*[\d,]+K\)")
-IO_VALUE_PATTERN = re.compile(r"\d+")
 
 
 @dataclass
@@ -296,20 +294,21 @@ class REF(Device):
 class DeviceComparator:
     """Handles comparison between two devices"""
     
-    def __init__(self, dut: Device, ref: Device, config: Config):
+    def __init__(self, dut: Device, ref: Device, config: Config, extracted: bool = False):
         self.dut = dut
         self.ref = ref
         self.config = config
         self.analyzer = DevicePerformanceAnalyzer(config)
+        self.extracted = extracted  # Store the extracted parameter
     
     def compare(self) -> ComparisonResult:
         """Compare the two devices and return results"""
         # Perform analysis on both devices if not already done
         if not self.dut.analysis_result:
-            self.dut.analyze(extracted=True)
+            self.dut.analyze(extracted=self.extracted)
             
         if not self.ref.analysis_result:
-            self.ref.analyze(extracted=True)
+            self.ref.analyze(extracted=self.extracted)
         
         # Set anr_fatal and uptime based on comparison results
         # If no NG -> set anr_fatal to OK otherwise set Abnormal
@@ -369,10 +368,10 @@ class DeviceComparator:
     def generate_excel_report(self, output_path: Path) -> bool:
         """Generate Excel comparison report"""
         if not self.dut.analysis_result:
-            self.dut.analyze(extracted=True)
+            self.dut.analyze(extracted=self.extracted)
             
         if not self.ref.analysis_result:
-            self.ref.analyze(extracted=True)
+            self.ref.analyze(extracted=self.extracted)
             
         return self.analyzer.generate_excel_report(
             self.dut.analysis_result, 
@@ -383,10 +382,10 @@ class DeviceComparator:
     def generate_console_report(self) -> str:
         """Generate console summary report"""
         if not self.dut.analysis_result:
-            self.dut.analyze(extracted=True)
+            self.dut.analyze(extracted=self.extracted)
             
         if not self.ref.analysis_result:
-            self.ref.analyze(extracted=True)
+            self.ref.analyze(extracted=self.extracted)
             
         ret = ""
         ret_console = "\n=== UPTIME STATUS SUMMARY ==="
@@ -427,9 +426,19 @@ class DevicePerformanceAnalyzer:
     def __init__(self, config: Config = None):
         self.config = config or Config()
     
+    
     def extract_largest_file_from_zip(self, zip_path: Path, extract_dir: Path) -> Optional[Path]:
-        """Extract largest file from zip with intelligent caching and reuse of existing _tmp files"""
+        """Extract largest file from zip with intelligent caching"""
         extract_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate cache filename
+        zip_mtime = zip_path.stat().st_mtime
+        cache_filename = f"{zip_path.stem}_{int(zip_mtime)}.txt"
+        cache_path = extract_dir / cache_filename
+        
+        # Return cached file if exists
+        if cache_path.exists():
+            return cache_path
         
         try:
             with zipfile.ZipFile(zip_path, 'r') as z:
@@ -438,13 +447,6 @@ class DevicePerformanceAnalyzer:
                     return None
                 
                 largest = max(infos, key=lambda x: x.file_size)
-                # Use original filename from zip (align with pageboost_main)
-                original_filename = largest.filename.replace("/", "_")
-                cache_path = extract_dir / original_filename
-                
-                # Return cached file if exists (reuse from previous extraction)
-                if cache_path.exists():
-                    return cache_path
                 
                 # Extract to cache location
                 with open(cache_path, "wb") as f:
@@ -599,20 +601,14 @@ class DevicePerformanceAnalyzer:
         return total_minutes
     
     def extract_all_zips(self, folder: Path) -> Dict[Path, Path]:
-        """Extract all zip files first and return mapping of zip files to extracted file paths.
-        Reuses existing _tmp folder if present, otherwise creates new one.
-        """
+        """Extract all zip files first and return mapping of zip files to extracted file paths"""
         cache_dir = folder / "_tmp"
         cache_dir.mkdir(parents=True, exist_ok=True)
         
         zip_files = [f for f in folder.glob("*.zip") if f.is_file()]
         zip_to_extracted = {}
         
-        if not zip_files:
-            return zip_to_extracted
-        
-        # Extract files using threading (intelligently handles existing _tmp files)
-        print(f"Processing {len(zip_files)} zip files...")
+        # Use threading to extract files in parallel
         with ThreadPoolExecutor(max_workers=8) as executor:
             # Submit all extraction tasks
             future_to_zip = {
@@ -632,16 +628,17 @@ class DevicePerformanceAnalyzer:
         
         return zip_to_extracted
     
-    def collect_all_data_from_zips(self, folder: Path) -> Tuple[List[UptimeData], List[CrashData]]:
-        """Collect all data (uptime and crashes) from zip files in a single pass per file.
-        Extracts part names from zip file names (using regex).
-        Uses extracted .txt files from _tmp folder.
-        """
+    def collect_all_data_from_zips(self, folder: Path) -> Tuple[List[UptimeData], List[CrashData], List[AppStartKillInfo]]:
+        """Collect all data (uptime, crashes, and app start/kill) from zip files in a single pass per file"""
         uptime_data = []
         crash_data = []
+        app_start_kill_data = []
         
-        # Extract all zip files first (intelligently reuses existing _tmp if available)
+        # Extract all zip files first
         zip_to_extracted = self.extract_all_zips(folder)
+        
+        # Initialize app analyzer
+        app_analyzer = AppStartKillAnalyzer()
         
         # Then process all extracted files
         for zip_file, dump_path in zip_to_extracted.items():
@@ -649,9 +646,7 @@ class DevicePerformanceAnalyzer:
             uptime_result, io_read_data, io_write_data, file_crash_data = self.parse_file_content(dump_path)
             uptime_minutes, status, raw_line = uptime_result
             
-            # Extract part name from ZIP FILE NAME (not from folder name)
-            # This ensures we always get the correct part name even when reusing _tmp
-            # Example: A576BYK7_BOS_251128_251128_120843_6part_Bugreport.zip -> 6part
+            # Extract part name from zip file name
             part_name = self._extract_part_name(zip_file.name)
             
             uptime_data.append(UptimeData(
@@ -666,8 +661,38 @@ class DevicePerformanceAnalyzer:
             ))
             
             crash_data.extend(file_crash_data)
+            
+            # Process app start/kill data from dumpstate file
+            if part_name:
+                print(f"Processing app start/kill data for part: {part_name} from {zip_file.name}")
+                
+                # Get all apps for this part
+                target_apps = []
+                for app, part_num in FOLDER_APP_PART_MAPPING.items():
+                    if f"{part_num}part" == part_name:
+                        target_apps.append(app)
+                
+                # Special handling for 2part to include calllog, dial, clock
+                if part_name == "2part":
+                    additional_apps = ["calllog", "dial", "clock"]
+                    for app in additional_apps:
+                        if app not in target_apps:
+                            target_apps.append(app)
+                
+                # print(f"Target apps for {part_name}: {target_apps}")
+                
+                # Analyze each app from the dumpstate file
+                for target_app in target_apps:
+                    try:
+                        app_info = app_analyzer.analyze_file(dump_path, target_app)
+                        app_info.folder_name = zip_file.stem  # Use zip file name as folder identifier
+                        app_start_kill_data.append(app_info)
+                        # print(f"  {target_app}: start={app_info.start_count}, kill={app_info.kill_count}")
+                    except Exception as e:
+                        print(f"Error analyzing {target_app} in {zip_file.name}: {e}")
         
-        return uptime_data, crash_data
+        print(f"Total app start/kill records collected: {len(app_start_kill_data)}")
+        return uptime_data, crash_data, app_start_kill_data
     
     def collect_all_data_from_extracted(self, folder: Path) -> Tuple[List[UptimeData], List[CrashData]]:
         """Collect all data (uptime and crashes) from extracted folders in a single pass per file"""
@@ -733,37 +758,18 @@ class DevicePerformanceAnalyzer:
             return None
     
     def _extract_part_name(self, folder_name: str) -> Optional[str]:
-        """Extract part name from folder name (e.g., 1part, 2part, Part1, Part2, etc.)"""
-        # Look for patterns like 1part, 2part, Part1, Part2, etc. in the folder name
+        """Extract part name from folder name (e.g., 1part, 2part, etc.)"""
+        # Look for patterns like 1part, 2part, etc. in the folder name
         # Handle both folder names and zip file names
-        part_pattern = re.compile(r'((?:\d+part|part\d+))', re.IGNORECASE)
+        part_pattern = re.compile(r'(\d+part)')
         match = part_pattern.search(folder_name)
         if match:
-            # Normalize to lowercase format (e.g., "1part", "2part")
-            part_name = match.group(1).lower()
-            # Ensure consistent format: number before "part"
-            if part_name.startswith('part'):
-                # Convert "part1" to "1part"
-                number = re.search(r'\d+', part_name)
-                if number:
-                    return f"{number.group()}part"
-            return part_name
-
-        # For zip files, look for the part pattern before _Bugreport.zip
-        zip_pattern = re.compile(r'((?:\d+part|part\d+))_Bugreport\.zip$', re.IGNORECASE)
-        match = zip_pattern.search(folder_name)
-        if match:
-            # Normalize to lowercase format (e.g., "1part", "2part")
-            part_name = match.group(1).lower()
-            # Ensure consistent format: number before "part"
-            if part_name.startswith('part'):
-                # Convert "part1" to "1part"
-                number = re.search(r'\d+', part_name)
-                if number:
-                    return f"{number.group()}part"
-            return part_name
+            return match.group(1)
         
-        return None
+        # For zip files, look for the part pattern before _Bugreport.zip
+        zip_pattern = re.compile(r'(\d+part)_Bugreport\.zip$')
+        match = zip_pattern.search(folder_name)
+        return match.group(1) if match else None
     
     def _group_and_calculate_averages(self, uptime_data: List[UptimeData]) -> Dict[str, Dict[str, List[Tuple[str, float]]]]:
         """Group uptime data by parts and calculate averages for IO READ/WRITE using heapq.nlargest for better performance"""
@@ -870,27 +876,29 @@ class DevicePerformanceAnalyzer:
         return "UNKNOWN"
     
     def analyze_folder(self, folder: Path, extracted: bool = False) -> AnalysisResult:
-        """Analyze a single folder and return structured results.
-        
-        Prioritizes zip files for extraction and part naming.
-        If zip files exist, extracts part names from zip file names (using regex).
-        Always uses extracted .txt files from _tmp folder (reuses if already extracted).
-        Falls back to extracted folders only if no zip files found.
-        
-        For app start/kill analysis, always looks for extracted folders if they exist.
-        """
+        """Analyze a single folder and return structured results"""
         prefix = self.get_prefix(folder)
         
-        # Check if zip files exist - if yes, use zip mode for uptime/crash data
-        # This ensures part names are extracted from zip files, not folder names
-        zip_files = list(folder.glob("*.zip"))
-        
-        if zip_files or not extracted:
-            # Use zip mode (extracts part names from zip files, uses _tmp for content)
-            uptime_data, crash_data = self.collect_all_data_from_zips(folder)
-        else:
-            # Fall back to extracted folder mode only if no zip files found
+        if extracted:
             uptime_data, crash_data = self.collect_all_data_from_extracted(folder)
+            
+            # Analyze app start/kill events for extracted folders
+            app_start_kill_data = []
+            app_analyzer = AppStartKillAnalyzer()
+            # Group subdirectories by part name for app analysis
+            part_groups = defaultdict(list)
+            for sub_dir in sorted([d for d in folder.iterdir() if d.is_dir()]):
+                part_name = self._extract_part_name(sub_dir.name)
+                if part_name:
+                    part_groups[part_name].append(sub_dir)
+            
+            # Process all folders for each part
+            for part_name, sub_dirs in part_groups.items():
+                for sub_dir in sub_dirs:
+                    app_info_list = app_analyzer.analyze_folder(sub_dir, part_name)
+                    app_start_kill_data.extend(app_info_list)
+        else:
+            uptime_data, crash_data, app_start_kill_data = self.collect_all_data_from_zips(folder)
         
         # Keep original uptime data for uptime sheets (individual files)
         original_uptime_data = uptime_data[:]
@@ -901,39 +909,15 @@ class DevicePerformanceAnalyzer:
         # Update uptime_data with averaged IO data for IO sheets and comparison sheets
         updated_uptime_data = self._update_uptime_data_with_averages(uptime_data, part_io_data)
         
-        # Analyze app start/kill events
-        # IMPORTANT: Always check for extracted folders, even if we used zip mode above
-        # because app analysis requires actual folder structure
-        app_start_kill_data = []
-        extracted_folders = [d for d in folder.iterdir() if d.is_dir() and self._extract_part_name(d.name)]
-        
-        if extracted_folders:
-            app_analyzer = AppStartKillAnalyzer()
-            # Group subdirectories by part name for app analysis
-            part_groups = defaultdict(list)
-            for sub_dir in sorted(extracted_folders):
-                part_name = self._extract_part_name(sub_dir.name)
-                if part_name:
-                    part_groups[part_name].append(sub_dir)
-            
-            # Process all folders for each part
-            for part_name, sub_dirs in part_groups.items():
-                for sub_dir in sub_dirs:
-                    app_info_list = app_analyzer.analyze_folder(sub_dir, part_name)
-                    app_start_kill_data.extend(app_info_list)
-        
-        # Store dumpstate file contents for PSS analysis
-        dumpstate_contents = {}
+        # OPTIMIZATION: Don't store entire dumpstate contents in memory
+        # Instead, store just the file paths for on-demand processing
+        dumpstate_file_paths = {}
         for item in original_uptime_data:
             if item.extracted_file_path:
-                try:
-                    with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        dumpstate_contents[item.extracted_file_path] = f.read()
-                except Exception as e:
-                    print(f"Error reading dumpstate file {item.extracted_file_path}: {e}")
+                dumpstate_file_paths[item.extracted_file_path] = item.extracted_file_path
         
-        # Extract compiler information
-        compiler_data = self._extract_compiler_info(dumpstate_contents)
+        # OPTIMIZATION: Extract compiler info on-demand without storing full contents
+        compiler_data = self._extract_compiler_info_on_demand(dumpstate_file_paths)
         
         ok_count = sum(1 for item in original_uptime_data if item.status == self.config.STATUS_OK)
         ng_count = sum(1 for item in original_uptime_data if item.status == self.config.STATUS_NG)
@@ -951,7 +935,7 @@ class DevicePerformanceAnalyzer:
             fatal_count=fatal_count,
             app_start_kill_data=app_start_kill_data,
             averaged_io_data=part_io_data,
-            dumpstate_contents=dumpstate_contents,
+            dumpstate_contents={},  # OPTIMIZATION: Empty dict to avoid storing file contents
             compiler_data=compiler_data
         )
     
@@ -1086,7 +1070,8 @@ class DevicePerformanceAnalyzer:
             
         except Exception as e:
             print(f"Error saving Excel file: {e}")
-            return False
+            pass
+            # return False
     
     def _create_device_sheet(self, ws, result: AnalysisResult, device_type: str):
         """Create optimized device sheet with bulk operations"""
@@ -1254,131 +1239,6 @@ class DevicePerformanceAnalyzer:
         result_cell.fill = result_fill
         result_cell.font = Font(bold=True)
     
-    def _create_io_read_sheet(self, ws, result: AnalysisResult, device_type: str):
-        """Create I/O read sheet following the structure of IO READ report template.xlsx"""
-        # Setup styles
-        styles = self._create_styles()
-        
-        # Setup headers
-        title_cell = ws.cell(1, 1, f"{result.prefix} I/O Read Analysis ({device_type})")
-        title_cell.font = Font(bold=True, size=14)
-        title_cell.alignment = Alignment(horizontal="center")
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=3)
-        
-        # Column headers
-        headers = ["File Name", "Top IO READ Process", "Amount (MB)"]
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(2, col, header)
-            cell.font = styles['header_font']
-            cell.alignment = styles['header_alignment']
-            cell.fill = styles['header_fill']
-        
-        # Prepare data in bulk
-        row_idx = 3
-        for item in sorted(result.uptime_data, key=lambda x: x.filename):
-            # Get I/O read data for this file
-            # Use the I/O read data stored in the UptimeData object
-            io_read_data = item.io_read_data if item.io_read_data else []
-            
-            # If we have I/O read data, add it to the sheet
-            # Limit to top 10 processes as requested
-            if io_read_data:
-                # Only show top 10 processes
-                top_10_processes = io_read_data[:10]
-                
-                first_process, first_amount = top_10_processes[0] if top_10_processes else ("", 0.0)
-                
-                # First row with file name and top process
-                ws.cell(row_idx, 1, item.filename)
-                ws.cell(row_idx, 2, first_process)
-                ws.cell(row_idx, 3, first_amount)
-                row_idx += 1
-                
-                # Additional rows for other processes (without file name)
-                for process, amount in top_10_processes[1:]:
-                    ws.cell(row_idx, 1, "")  # Empty file name
-                    ws.cell(row_idx, 2, process)
-                    ws.cell(row_idx, 3, amount)
-                    row_idx += 1
-            else:
-                # If no I/O read data, still add the file name
-                ws.cell(row_idx, 1, item.filename)
-                ws.cell(row_idx, 2, "No I/O read data")
-                ws.cell(row_idx, 3, 0.0)
-                row_idx += 1
-        
-        # Set column widths
-        io_read_column_widths = {
-            1: 40,  # File name
-            2: 25,  # Top IO READ Process
-            3: 15   # Amount (MB)
-        }
-        
-        for col, width in io_read_column_widths.items():
-            ws.column_dimensions[get_column_letter(col)].width = width
-    
-    def _create_io_write_sheet(self, ws, result: AnalysisResult, device_type: str):
-        """Create I/O write sheet following the structure of IO WRITE report template.xlsx"""
-        # Setup styles
-        styles = self._create_styles()
-        
-        # Setup headers
-        title_cell = ws.cell(1, 1, f"{result.prefix} I/O Write Analysis ({device_type})")
-        title_cell.font = Font(bold=True, size=14)
-        title_cell.alignment = Alignment(horizontal="center")
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=3)
-        
-        # Column headers
-        headers = ["File Name", "Top IO WRITE Process", "Amount (MB)"]
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(2, col, header)
-            cell.font = styles['header_font']
-            cell.alignment = styles['header_alignment']
-            cell.fill = styles['header_fill']
-        
-        # Prepare data in bulk
-        row_idx = 3
-        for item in sorted(result.uptime_data, key=lambda x: x.filename):
-            # Get I/O write data for this file
-            # Use the I/O write data stored in the UptimeData object
-            io_write_data = item.io_write_data if item.io_write_data else []
-            
-            # If we have I/O write data, add it to the sheet
-            # Limit to top 10 processes as requested
-            if io_write_data:
-                # Only show top 10 processes
-                top_10_processes = io_write_data[:10]
-                
-                first_process, first_amount = top_10_processes[0] if top_10_processes else ("", 0.0)
-                
-                # First row with file name and top process
-                ws.cell(row_idx, 1, item.filename)
-                ws.cell(row_idx, 2, first_process)
-                ws.cell(row_idx, 3, first_amount)
-                row_idx += 1
-                
-                # Additional rows for other processes (without file name)
-                for process, amount in top_10_processes[1:]:
-                    ws.cell(row_idx, 1, "")  # Empty file name
-                    ws.cell(row_idx, 2, process)
-                    ws.cell(row_idx, 3, amount)
-                    row_idx += 1
-            else:
-                # If no I/O write data, still add the file name
-                ws.cell(row_idx, 1, item.filename)
-                ws.cell(row_idx, 2, "No I/O write data")
-                ws.cell(row_idx, 3, 0.0)
-                row_idx += 1
-        
-        # Set column widths
-        io_write_column_widths = {
-            1: 40,  # File name
-            2: 25,  # Top IO WRITE Process
-            3: 15   # Amount (MB)
-        }
-        
-        for col, width in io_write_column_widths.items():
-            ws.column_dimensions[get_column_letter(col)].width = width
     
     def _create_styles(self) -> Dict[str, Any]:
         """Create reusable styles"""
@@ -1558,13 +1418,14 @@ class DevicePerformanceAnalyzer:
         for row in range(1, row_idx):
             ws.row_dimensions[row].auto_size = True
     
-    def _extract_compiler_info(self, dumpstate_contents: Dict[Path, str]) -> Dict[str, str]:
+    
+    def _extract_compiler_info_on_demand(self, dumpstate_file_paths: Dict[Path, Path]) -> Dict[str, str]:
         """
-        Extract compiler information for test apps from dumpstate contents.
+        Extract compiler information for test apps from dumpstate files on-demand.
         Only process the first dumpstate file to maintain performance.
         
         Args:
-            dumpstate_contents: Dictionary mapping file paths to their contents
+            dumpstate_file_paths: Dictionary mapping file paths to file paths (for on-demand processing)
             
         Returns:
             Dict mapping app names to their compiler types
@@ -1593,47 +1454,63 @@ class DevicePerformanceAnalyzer:
             'recent': 'com.sec.android.app.launcher'
         }
         
-        # Process only the first dumpstate content to maintain performance
+        # Process only the first dumpstate file to maintain performance
         # Convert to list and take the first item
-        dumpstate_items = list(dumpstate_contents.items())
+        dumpstate_items = list(dumpstate_file_paths.items())
         if not dumpstate_items:
             return compiler_data
             
-        file_path, content = dumpstate_items[0]
-        if not content:
+        file_path, _ = dumpstate_items[0]
+        if not file_path or not file_path.exists():
             return compiler_data
-                
-        # Look for Dexopt state section
-        dexopt_start = content.find("Dexopt state:")
-        if dexopt_start == -1:
-            return compiler_data
-                
-        # Look for Compiler stats section
-        compiler_stats_start = content.find("Compiler stats:")
-        if compiler_stats_start == -1:
-            compiler_stats_start = len(content)
-            
-        # Extract the Dexopt state section
-        dexopt_section = content[dexopt_start:compiler_stats_start]
         
-        # For each test app, find its compiler information
-        for app_name, package_name in test_apps.items():
-            # Look for the package name in the Dexopt state section
-            package_start = dexopt_section.find(f"[{package_name}]")
-            if package_start == -1:
-                continue
+        try:
+            # FIX: Use a more robust approach to find the Dexopt state section
+            # Search through the file more systematically to ensure we find the section
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                # First, check if file contains Dexopt state at all
+                file_content = f.read()
+                if "Dexopt state:" not in file_content:
+                    # print(f"Warning: Dexopt state section not found in {file_path}")
+                    return compiler_data
                 
-            # Look for arm64 line within 10 lines after the package name
-            lines = dexopt_section[package_start:].split('\n')
-            for i in range(min(10, len(lines))):
-                line = lines[i]
-                if 'arm64:' in line and '[status=' in line:
-                    # Extract status from [status=XXX]
-                    status_match = re.search(r'\[status=([^\]]+)\]', line)
-                    if status_match:
-                        compiler_status = status_match.group(1)
-                        compiler_data[app_name] = compiler_status
-                        break
+                # Find the Dexopt state section
+                dexopt_start = file_content.find("Dexopt state:")
+                if dexopt_start == -1:
+                    # print(f"Warning: Dexopt state section not found in {file_path}")
+                    return compiler_data
+                
+                # Look for Compiler stats section to bound the Dexopt section
+                compiler_stats_start = file_content.find("Compiler stats:", dexopt_start)
+                if compiler_stats_start == -1:
+                    compiler_stats_start = len(file_content)
+                
+                # Extract just the Dexopt state section (limit size to prevent memory issues)
+                max_section_size = 2 * 1024 * 1024  # 2MB limit for the section
+                section_end = min(compiler_stats_start, dexopt_start + max_section_size)
+                dexopt_section = file_content[dexopt_start:section_end]
+                
+                # For each test app, find its compiler information
+                for app_name, package_name in test_apps.items():
+                    # Look for the package name in the Dexopt state section
+                    package_start = dexopt_section.find(f"[{package_name}]")
+                    if package_start == -1:
+                        continue
+                        
+                    # Look for arm64 line within 10 lines after the package name
+                    lines = dexopt_section[package_start:].split('\n')
+                    for i in range(min(10, len(lines))):
+                        line = lines[i]
+                        if 'arm64:' in line and '[status=' in line:
+                            # Extract status from [status=XXX]
+                            status_match = re.search(r'\[status=([^\]]+)\]', line)
+                            if status_match:
+                                compiler_status = status_match.group(1)
+                                compiler_data[app_name] = compiler_status
+                                break
+                
+        except Exception as e:
+            print(f"Error reading compiler info from {file_path}: {e}")
         
         return compiler_data
     
@@ -1656,6 +1533,8 @@ class DevicePerformanceAnalyzer:
             cell.alignment = styles['header_alignment']
             cell.fill = styles['header_fill']
         
+        print(f"Creating PSS Analysis sheet for {len(result1.uptime_data)} DUT items and {len(result2.uptime_data)} REF items")
+        
         # Import the get_ram_size function
         try:
             from .analyze_pss import get_ram_size
@@ -1667,15 +1546,12 @@ class DevicePerformanceAnalyzer:
         ref_threshold = self.config.DEFAULT_PSS_THRESHOLD_MB  # Default threshold from Config
         
         # Get the first dumpstate file for DUT to determine RAM size
-        # Use stored dumpstate contents if available
         for item in result1.uptime_data:
             if item.extracted_file_path:
                 try:
-                    if result1.dumpstate_contents and item.extracted_file_path in result1.dumpstate_contents:
-                        content = result1.dumpstate_contents[item.extracted_file_path]
-                    else:
-                        with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read()
+                    print(f"Reading DUT dumpstate for RAM detection: {item.extracted_file_path}")
+                    with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
                     ram_size = get_ram_size(content)
                     dut_threshold = self.config.get_threshold_for_ram(ram_size)
                     print(f"DUT RAM size: {ram_size}GB, PSS threshold: {dut_threshold}MB")
@@ -1685,15 +1561,12 @@ class DevicePerformanceAnalyzer:
                     break
         
         # Get the first dumpstate file for REF to determine RAM size
-        # Use stored dumpstate contents if available
         for item in result2.uptime_data:
             if item.extracted_file_path:
                 try:
-                    if result2.dumpstate_contents and item.extracted_file_path in result2.dumpstate_contents:
-                        content = result2.dumpstate_contents[item.extracted_file_path]
-                    else:
-                        with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read()
+                    print(f"Reading REF dumpstate for RAM detection: {item.extracted_file_path}")
+                    with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
                     ram_size = get_ram_size(content)
                     ref_threshold = self.config.get_threshold_for_ram(ram_size)
                     print(f"REF RAM size: {ram_size}GB, PSS threshold: {ref_threshold}MB")
@@ -1706,15 +1579,13 @@ class DevicePerformanceAnalyzer:
         pss_data = []
         
         # Process DUT data
-        # Use stored dumpstate contents if available
+        print("Processing DUT PSS data...")
         for item in result1.uptime_data:
             if item.extracted_file_path:
                 try:
-                    if result1.dumpstate_contents and item.extracted_file_path in result1.dumpstate_contents:
-                        content = result1.dumpstate_contents[item.extracted_file_path]
-                    else:
-                        with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read()
+                    print(f"Reading DUT dumpstate for PSS: {item.extracted_file_path}")
+                    with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
                     
                     # Find the PSS section
                     pss_start = content.find("Total PSS by process:")
@@ -1724,6 +1595,7 @@ class DevicePerformanceAnalyzer:
                         pss_section = content[pss_start:pss_end]
                         lines = pss_section.split('\n')
                         
+                        process_count = 0
                         for line in lines:
                             # Match lines with PSS data: "    XXX,XXXK: process_name (pid XXX) ..."
                             match = re.match(r'\s+(\d{1,3}(?:,\d{3})*)K:\s*([^\s\(]+)', line)
@@ -1735,24 +1607,29 @@ class DevicePerformanceAnalyzer:
                                 
                                 # Only include processes with PSS > dut_threshold (based on RAM size)
                                 if pss_value_mb > dut_threshold:
-                                    folder_name = f"DUT_{item.filename}"
+                                    # Use part name instead of filename for better organization
+                                    part_name = item.part_name if item.part_name else "unknown"
+                                    folder_name = f"DUT_{part_name}_{item.filename}"
                                     pss_data.append((folder_name, process_name, pss_value_mb))
+                                    process_count += 1
                                 else:
                                     # Since PSS data is sorted from big to small, we can break early
                                     break
+                        
+                        print(f"  Found {process_count} processes above threshold for {item.filename}")
+                    else:
+                        print(f"  PSS section not found in {item.filename}")
                 except Exception as e:
                     print(f"Error processing PSS data for {item.extracted_file_path}: {e}")
         
         # Process REF data
-        # Use stored dumpstate contents if available
+        print("Processing REF PSS data...")
         for item in result2.uptime_data:
             if item.extracted_file_path:
                 try:
-                    if result2.dumpstate_contents and item.extracted_file_path in result2.dumpstate_contents:
-                        content = result2.dumpstate_contents[item.extracted_file_path]
-                    else:
-                        with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read()
+                    print(f"Reading REF dumpstate for PSS: {item.extracted_file_path}")
+                    with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
                     
                     # Find the PSS section
                     pss_start = content.find("Total PSS by process:")
@@ -1762,6 +1639,7 @@ class DevicePerformanceAnalyzer:
                         pss_section = content[pss_start:pss_end]
                         lines = pss_section.split('\n')
                         
+                        process_count = 0
                         for line in lines:
                             # Match lines with PSS data: "    XXX,XXXK: process_name (pid XXX) ..."
                             match = re.match(r'\s+(\d{1,3}(?:,\d{3})*)K:\s*([^\s\(]+)', line)
@@ -1773,11 +1651,18 @@ class DevicePerformanceAnalyzer:
                                 
                                 # Only include processes with PSS > ref_threshold (based on RAM size)
                                 if pss_value_mb > ref_threshold:
-                                    folder_name = f"REF_{item.filename}"
+                                    # Use part name instead of filename for better organization
+                                    part_name = item.part_name if item.part_name else "unknown"
+                                    folder_name = f"REF_{part_name}_{item.filename}"
                                     pss_data.append((folder_name, process_name, pss_value_mb))
+                                    process_count += 1
                                 else:
                                     # Since PSS data is sorted from big to small, we can break early
                                     break
+                        
+                        print(f"  Found {process_count} processes above threshold for {item.filename}")
+                    else:
+                        print(f"  PSS section not found in {item.filename}")
                 except Exception as e:
                     print(f"Error processing PSS data for {item.extracted_file_path}: {e}")
         
@@ -1788,6 +1673,8 @@ class DevicePerformanceAnalyzer:
             ws.cell(row=row_idx, column=2, value=process_name)
             ws.cell(row=row_idx, column=3, value=round(pss_value_mb, 2))
             row_idx += 1
+        
+        print(f"PSS Analysis sheet completed with {len(pss_data)} rows of data")
         
         # Auto-adjust column widths
         for col in range(1, 4):
@@ -1816,55 +1703,41 @@ class DevicePerformanceAnalyzer:
             cell.alignment = styles['header_alignment']
             cell.fill = styles['header_fill']
         
-        # Create a mapping of folder name to UptimeData for both DUT and REF
-        dut_folder_map = {item.filename: item for item in result1.uptime_data}
-        ref_folder_map = {item.filename: item for item in result2.uptime_data}
+        print(f"Creating Testing App PSS sheet for {len(result1.uptime_data)} DUT items and {len(result2.uptime_data)} REF items")
         
-        # Create part mappings based on the folder structure
-        dut_part_map = {}
-        ref_part_map = {}
+        # Group uptime data by part name for both DUT and REF
+        dut_part_data = defaultdict(list)
+        ref_part_data = defaultdict(list)
         
-        # Map folders to parts for DUT
+        # Group DUT data by part name
         for item in result1.uptime_data:
-            if item.filename:
-                part_name = self._extract_part_name(item.filename)
-                if part_name:
-                    dut_part_map[item.filename] = part_name
-                    
-        # Map folders to parts for REF
+            part_name = item.part_name
+            if part_name and item.extracted_file_path:
+                dut_part_data[part_name].append(item)
+                print(f"DUT: Found item for part {part_name}: {item.filename} -> {item.extracted_file_path}")
+        
+        # Group REF data by part name
         for item in result2.uptime_data:
-            if item.filename:
-                part_name = self._extract_part_name(item.filename)
-                if part_name:
-                    ref_part_map[item.filename] = part_name
+            part_name = item.part_name
+            if part_name and item.extracted_file_path:
+                ref_part_data[part_name].append(item)
+                print(f"REF: Found item for part {part_name}: {item.filename} -> {item.extracted_file_path}")
         
-        # Group folders by part
-        dut_part_folders = defaultdict(list)
-        ref_part_folders = defaultdict(list)
-        
-        # Group DUT folders by part
-        for folder_name in dut_folder_map.keys():
-            part_name = dut_part_map.get(folder_name)
-            if part_name:
-                dut_part_folders[part_name].append(folder_name)
-        
-        # Group REF folders by part
-        for folder_name in ref_folder_map.keys():
-            part_name = ref_part_map.get(folder_name)
-            if part_name:
-                ref_part_folders[part_name].append(folder_name)
-        
-        # Sort folder names within each part
-        for part_name in dut_part_folders:
-            dut_part_folders[part_name].sort()
-        for part_name in ref_part_folders:
-            ref_part_folders[part_name].sort()
+        print(f"DUT parts: {list(dut_part_data.keys())}")
+        print(f"REF parts: {list(ref_part_data.keys())}")
         
         # Write data to sheet
         row_idx = 3
         # Get all unique parts
-        all_parts = set(dut_part_folders.keys()) | set(ref_part_folders.keys())
+        all_parts = set(dut_part_data.keys()) | set(ref_part_data.keys())
+        
+        if not all_parts:
+            print("No parts found for PSS analysis!")
+            return
+        
         for part_name in sorted(all_parts):
+            print(f"Processing PSS for part: {part_name}")
+            
             # Get all apps for this part (including calllog, dial, clock for 2part)
             target_apps = []
             for app, part in FOLDER_APP_PART_MAPPING.items():
@@ -1879,68 +1752,74 @@ class DevicePerformanceAnalyzer:
                     if app not in target_apps:
                         target_apps.append(app)
             
+            print(f"Target apps for {part_name}: {target_apps}")
+            
             # Process each app for this part
             for target_app in target_apps:
                 # Get package name for the target app
                 target_package = APP_PACKAGE_MAPPING.get(target_app)
                 if not target_package:
+                    print(f"No package mapping found for app: {target_app}")
                     continue
                 
-                # Get folder lists for this part
-                dut_folders = dut_part_folders.get(part_name, [])
-                ref_folders = ref_part_folders.get(part_name, [])
+                print(f"Processing PSS for {target_app} ({target_package}) in {part_name}")
+                
+                # Get items for this part
+                dut_items = dut_part_data.get(part_name, [])
+                ref_items = ref_part_data.get(part_name, [])
                 
                 # If both are empty, skip this app
-                if len(dut_folders) == 0 and len(ref_folders) == 0:
+                if len(dut_items) == 0 and len(ref_items) == 0:
+                    print(f"No items found for {target_app} in {part_name}")
                     continue
                 
-                # Extract PSS data for all folders of this app in this part
+                # Extract PSS data for all items of this app in this part
                 dut_pss_values = []
                 ref_pss_values = []
                 
-                # Process DUT folders
-                # Use stored dumpstate contents if available
-                for dut_folder in dut_folders:
-                    dut_data = dut_folder_map.get(dut_folder)
-                    if dut_data and dut_data.extracted_file_path:
+                # Process DUT items
+                for dut_item in dut_items:
+                    if dut_item.extracted_file_path:
                         try:
-                            if result1.dumpstate_contents and dut_data.extracted_file_path in result1.dumpstate_contents:
-                                dut_content = result1.dumpstate_contents[dut_data.extracted_file_path]
-                            else:
-                                with open(dut_data.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                                    dut_content = f.read()
+                            print(f"Reading DUT dumpstate: {dut_item.extracted_file_path}")
+                            with open(dut_item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                                dut_content = f.read()
                             dut_pss = extract_pss_for_package(dut_content, target_package)
                             if dut_pss > 0:
                                 dut_pss_values.append(dut_pss)
-                        except Exception as e:
-                            print(f"Error extracting PSS for {target_package} in {dut_folder}: {e}")
-                
-                # Process REF folders
-                # Use stored dumpstate contents if available
-                for ref_folder in ref_folders:
-                    ref_data = ref_folder_map.get(ref_folder)
-                    if ref_data and ref_data.extracted_file_path:
-                        try:
-                            if result2.dumpstate_contents and ref_data.extracted_file_path in result2.dumpstate_contents:
-                                ref_content = result2.dumpstate_contents[ref_data.extracted_file_path]
+                                print(f"  DUT PSS for {target_app}: {dut_pss}MB")
                             else:
-                                with open(ref_data.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                                    ref_content = f.read()
+                                print(f"  DUT PSS for {target_app}: 0MB (not found)")
+                        except Exception as e:
+                            print(f"Error extracting PSS for {target_package} in {dut_item.filename}: {e}")
+                
+                # Process REF items
+                for ref_item in ref_items:
+                    if ref_item.extracted_file_path:
+                        try:
+                            print(f"Reading REF dumpstate: {ref_item.extracted_file_path}")
+                            with open(ref_item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                                ref_content = f.read()
                             ref_pss = extract_pss_for_package(ref_content, target_package)
                             if ref_pss > 0:
                                 ref_pss_values.append(ref_pss)
+                                print(f"  REF PSS for {target_app}: {ref_pss}MB")
+                            else:
+                                print(f"  REF PSS for {target_app}: 0MB (not found)")
                         except Exception as e:
-                            print(f"Error extracting PSS for {target_package} in {ref_folder}: {e}")
+                            print(f"Error extracting PSS for {target_package} in {ref_item.filename}: {e}")
                 
                 # Calculate averages
                 dut_avg_pss = sum(dut_pss_values) / len(dut_pss_values) if dut_pss_values else 0.0
                 ref_avg_pss = sum(ref_pss_values) / len(ref_pss_values) if ref_pss_values else 0.0
                 
+                print(f"  Averages - DUT: {dut_avg_pss}MB, REF: {ref_avg_pss}MB")
+                
                 # Calculate diff
                 diff = dut_avg_pss - ref_avg_pss
                 
-                # Only add to report if diff exceeds PSS threshold
-                if abs(diff) >= self.config.PSS_DIFF_THRESHOLD:
+                # Add to report if either has data or diff exceeds threshold
+                if dut_avg_pss > 0 or ref_avg_pss > 0 or abs(diff) >= self.config.PSS_DIFF_THRESHOLD:
                     # Part name
                     ws.cell(row_idx, 1, part_name).alignment = Alignment(horizontal='center')
                     
@@ -1951,13 +1830,13 @@ class DevicePerformanceAnalyzer:
                     if dut_avg_pss > 0:
                         ws.cell(row_idx, 3, round(dut_avg_pss, 2)).alignment = Alignment(horizontal='center')
                     else:
-                        ws.cell(row_idx, 3, "").alignment = Alignment(horizontal='center')
+                        ws.cell(row_idx, 3, "N/A").alignment = Alignment(horizontal='center')
                     
                     # REF PSS (average)
                     if ref_avg_pss > 0:
                         ws.cell(row_idx, 4, round(ref_avg_pss, 2)).alignment = Alignment(horizontal='center')
                     else:
-                        ws.cell(row_idx, 4, "").alignment = Alignment(horizontal='center')
+                        ws.cell(row_idx, 4, "N/A").alignment = Alignment(horizontal='center')
                     
                     # Diff
                     diff_cell = ws.cell(row_idx, 5, round(diff, 2))
@@ -1966,7 +1845,12 @@ class DevicePerformanceAnalyzer:
                     if abs(diff) >= self.config.PSS_DIFF_THRESHOLD:
                         diff_cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")  # Yellow highlight
                     
+                    print(f"  Added to sheet: {target_app} - DUT: {dut_avg_pss}MB, REF: {ref_avg_pss}MB, Diff: {diff}MB")
                     row_idx += 1
+                else:
+                    print(f"  Skipped {target_app} - no significant data")
+        
+        print(f"Testing App PSS sheet completed with {row_idx - 3} rows of data")
         
         # Auto-fit column widths
         for col in range(1, 6):
@@ -2302,8 +2186,8 @@ def analyze_device_performance(dut: Device, ref: Device, extracted: bool = False
     """Main function with optimized implementation using Device OOP structure"""
     config = dut.config if hasattr(dut, 'config') else Config()
     
-    # Create comparator
-    comparator = DeviceComparator(dut, ref, config)
+    # Create comparator with extracted parameter
+    comparator = DeviceComparator(dut, ref, config, extracted)
     
     # Compare devices to set anr_fatal and uptime attributes
     comparator.compare()

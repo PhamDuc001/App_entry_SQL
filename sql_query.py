@@ -1131,7 +1131,46 @@ def get_priority_distribution(tp: TraceProcessor, tid: int, start_ts: int, end_t
     tp.query("DROP TABLE IF EXISTS prio_span_simple; DROP VIEW IF EXISTS target_sched; DROP VIEW IF EXISTS span_window;")
     
     return result
+# -------------------------------------------------------------------
+# ===================== Layout depth ================================
+# -------------------------------------------------------------------
 
+def get_layout_depth_slices(tp: TraceProcessor, tid: int, start_ts: int, end_ts: int, max_depth: int = 6) -> Dict[int, List[str]]:
+    """
+    Lấy danh sách các Slice Name trên Main Thread, phân nhóm theo Depth.
+    [FIXED] Join thêm bảng thread để lọc theo tid.
+    """
+    if not tid or not start_ts or not end_ts or start_ts >= end_ts:
+        return {}
+
+    # Query lấy name và depth
+    # Logic: slice -> thread_track -> thread (để check tid)
+    sql = f"""
+    SELECT DISTINCT s.name, s.depth
+    FROM slice s
+    JOIN thread_track tt ON s.track_id = tt.id
+    JOIN thread t ON tt.utid = t.utid
+    WHERE t.tid = {tid}
+    AND s.ts + s.dur >= {start_ts} 
+    AND s.ts <= {end_ts}
+    AND s.depth <= {max_depth}
+    ORDER BY s.depth, s.ts
+    """
+    
+    df = query_df(tp, sql)
+    
+    result = {d: [] for d in range(max_depth + 1)}
+    
+    if df is not None and not df.empty:
+        for _, row in df.iterrows():
+            depth = int(row['depth'])
+            name = str(row['name'])
+            
+            if depth <= max_depth:
+                # Có thể filter bớt các slice quá ngắn hoặc không quan trọng ở đây nếu muốn
+                result[depth].append(name)
+                
+    return result
 
 
 # -------------------------------------------------------------------
@@ -1640,9 +1679,32 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
     
     metrics["Priority_Data"] = prio_data
 
+    # =========================================================
+    # [NEW] LAYOUT DEPTH ANALYSIS
+    # =========================================================
+    layout_data = {}
+    
+    # Sử dụng lại target_intervals đã định nghĩa ở phần Priority
+    # (bindApplication, activityStart, activityResume, Choreographer)
+    # Nếu chưa có biến target_intervals, hãy copy lại từ đoạn Priority check:
+    target_intervals = {
+        'bindApplication': (bind_app_ts, bind_app_end) if 'bind_app_ts' in locals() and bind_app_ts else None,
+        'activityStart': (act_start_ts, act_start_end) if 'act_start_ts' in locals() and act_start_ts else None,
+        'activityResume': (act_resume_ts, act_resume_end) if 'act_resume_ts' in locals() and act_resume_ts else None,
+        'Choreographer': (cho_ts, cho_end) if 'cho_ts' in locals() and cho_ts else None
+    }
+    
+    if app_tid:
+        for cat_name, interval in target_intervals.items():
+            if interval:
+                start, end = interval
+                if start and end and end > start:
+                    # Lấy dữ liệu depth (Max depth = 6)
+                    depth_slices = get_layout_depth_slices(tp, app_tid, start, end, max_depth=6)
+                    layout_data[cat_name] = depth_slices
+
+    metrics["Layout_Data"] = layout_data
+
     metrics["PID_Mapping"] = pid_mapping if pid_mapping else {}
     metrics["App Package"] = app_pkg 
     return metrics
-
-
-    

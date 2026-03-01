@@ -40,6 +40,9 @@ from collections import defaultdict
 import xlsxwriter
 import json
 
+import pickle
+import traceback
+
 from perfetto.trace_processor.api import TraceProcessor, TraceProcessorConfig
 from sql_query import *
 from atracetosystrace import convert_trace
@@ -108,6 +111,7 @@ TARGET_APPS = [
     "clock",
     "contact",
     "calendar",
+    "calender",
     "calculator",
     "gallery",
     "message",
@@ -135,6 +139,13 @@ WARM_ONLY_KEYS = {
     "Touch Duration",
     "Touch Up ~ Activity Start"
 }
+
+# App name normalization map - fix common typos/misspellings
+APP_NAME_NORMALIZATION = {
+    "calender": "calendar",  # Fix "calender" → "calendar"
+}
+
+CACHE_VERSION = "1.0"  # Tăng lên "1.1", "2.0"... 
 
 # ---------------------------------------------------------------------------
 # Helper functions and analyze_trace 
@@ -178,6 +189,12 @@ def group_traces_by_app(trace_files: List[str], target_apps: List[str] = None) -
             raw_app_name = parts[-1]
             app_name = raw_app_name.lower()
             
+            # [FIX STEP 1] Normalize app name (fix typos like "calender" → "calendar")
+            if app_name in APP_NAME_NORMALIZATION:
+                original_name = app_name
+                app_name = APP_NAME_NORMALIZATION[app_name]
+                print(f"  [NORMALIZED] '{original_name}' → '{app_name}'")
+            
             # NEW: Check if app_name contains any target keyword
             matched_keyword = None
             for keyword in target_apps:
@@ -208,58 +225,53 @@ def group_traces_by_app(trace_files: List[str], target_apps: List[str] = None) -
 _BUGREPORT_MAPPINGS = {}
 _ALL_FILES_SORTED = []
 
-# def _process_single_trace_worker(args):
-#     """
-#     Worker function cho multiprocessing.
-#     Sử dụng global _BUGREPORT_MAPPINGS để lấy pid_mapping.
-#     """
-#     file_path, occurrence, app_name = args
-#     filename = Path(file_path).stem
-#     config = TraceProcessorConfig(bin_path=TRACE_PROCESSOR_BIN)
-    
-#     # Tìm pid_mapping tương ứng cho file này
-#     pid_mapping = None
-#     if _BUGREPORT_MAPPINGS and _ALL_FILES_SORTED:
-#         pid_mapping = get_bugreport_for_log(
-#             file_path, 
-#             _BUGREPORT_MAPPINGS, 
-#             _ALL_FILES_SORTED
-#         )
-    
-#     try:
-#         with TraceProcessor(trace=convert_trace(file_path), config=config) as tp:
-#             metrics = analyze_trace(tp, file_path, pid_mapping)
-#             category = 'entry' if occurrence % 2 == 1 else 'reentry'
-#             return (app_name, occurrence, category, metrics, filename)
-#     except Exception as e:
-#         print(f"    [ERROR] {Path(file_path).name}: {e}")
-#         return (app_name, occurrence, 'entry' if occurrence % 2 == 1 else 'reentry', None, filename)
 
 def _process_single_trace_worker(args):
-    """
-    Worker function cho multiprocessing.
-    [UPDATED] Nhận trực tiếp pid_mapping từ tham số, không dùng biến Global.
-    """
-    # Unpack thêm tham số pid_mapping và mapping_info (mapping_info dùng sau khi process)
-    file_path, occurrence, app_name, pid_mapping, mapping_info = args 
+    # Unpack thêm folder_path (cần truyền vào từ process_all_traces)
+    file_path, occurrence, app_name, pid_mapping, mapping_info, folder_path = args 
     filename = Path(file_path).stem
     config = TraceProcessorConfig(bin_path=TRACE_PROCESSOR_BIN)
     
-    # DEBUG: Kiểm tra xem worker có nhận được mapping không
-    # if pid_mapping:
-    #     print(f"    [DEBUG Worker] {filename} received mapping with {len(pid_mapping)} entries")
-    
     try:
         with TraceProcessor(trace=convert_trace(file_path), config=config) as tp:
-            # Truyền pid_mapping vào analyze_trace
             metrics = analyze_trace(tp, file_path, pid_mapping)
             category = 'entry' if occurrence % 2 == 1 else 'reentry'
+            
+            # ========================================================
+            # [TỐI ƯU MỚI] PARSE DUMPSTATE & MEMORY NGAY TẠI WORKER
+            # ========================================================
+            cycle_idx = (occurrence - 1) // 2
+            extend_data = {}
+            
+            # 1. Đọc Memory Data
+            if folder_path:
+                mem_data = get_memory_data_for_cycle(folder_path, app_name, cycle_idx)
+                if mem_data:
+                    extend_data['MemFree'] = mem_data.get('MemFree', 0)
+                    extend_data['MemAvailable'] = mem_data.get('MemAvailable', 0)
+            
+            # 2. Đọc Dumpstate (PSS, Pageboost, Uptime, Start/Kill, Crash, Compiler)
+            bugreport_path = mapping_info.get('bugreport_path', '') if mapping_info else ''
+            if bugreport_path:
+                dumpstate_content = find_dumpstate_content(bugreport_path)
+                if dumpstate_content:
+                    extend_data['App_PSS'] = parse_pss_for_app(dumpstate_content, app_name)
+                    extend_data['Pageboostd'] = parse_pageboostd_for_app(dumpstate_content, app_name)
+                    extend_data['Uptime'] = parse_uptime(dumpstate_content)
+                    extend_data['Start_Reason'] = parse_start_reasons(dumpstate_content, app_name)
+                    extend_data['Kill_Reason'] = parse_kill_reasons(dumpstate_content, app_name)
+                    extend_data['Crash_Count'] = count_crashes(dumpstate_content)
+                    extend_data['Compiler'] = parse_compiler_type(dumpstate_content, app_name)
+            
+            # Gắn data đã parse sẵn vào metrics để lưu Cache
+            metrics['Precomputed_Extend_Data'] = extend_data
+            # ========================================================
+            
             return (app_name, occurrence, category, metrics, filename)
     except Exception as e:
         print(f"    [ERROR] {Path(file_path).name}: {e}")
-        # import traceback
-        # traceback.print_exc()
         return (app_name, occurrence, 'entry' if occurrence % 2 == 1 else 'reentry', None, filename)
+
 
 def process_single_trace(args: Tuple[str, int, str], pid_mapping: Dict[int, str] = None) -> Tuple[str, int, str, Optional[Dict[str, Any]], str]:
     """
@@ -312,7 +324,8 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
             pid_mapping = mapping_info.get('pid_mapping', {}) if mapping_info else {}
             if not pid_mapping: pid_mapping = None
             
-            tasks.append((file_path, occurrence, app_name, pid_mapping, mapping_info))
+            # [CẬP NHẬT] Thêm folder_path vào cuối
+            tasks.append((file_path, occurrence, app_name, pid_mapping, mapping_info, folder_path))
     
     print(f"[{label}] Processing {len(tasks)} trace files with {num_workers} workers...")
     
@@ -481,7 +494,6 @@ def create_excel_output(
             )
             
             dut_cycles = dut_results.get(app_name, {}).get(launch_type, [])
-            print(dut_cycles)
             ref_cycles = ref_results.get(app_name, {}).get(launch_type, [])
             
             if not dut_cycles and not ref_cycles:
@@ -998,29 +1010,20 @@ def create_sheet(
         ref_values = []
         
         for i in range(max_cycles):
-            # Get memory data for DUT
+            # Get memory data for DUT — [REFACTORED] Đọc từ Precomputed_Extend_Data
             if i < num_dut_cycles and dut_folder_path:
-                mem_data = get_memory_data_for_cycle(dut_folder_path, app_name, i)
-                # Get dumpstate content for PSS and Pageboostd
-                # Use dut_cycles directly (not adjusted) to ensure trace_mapping is available
+                val = 0.0
                 dut_cycle = dut_cycles[i] if i < len(dut_cycles) else None
-                dumpstate_content = None
-                if dut_cycle:
-                    trace_mapping_info = dut_cycle.get('trace_mapping', {})
-                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
-                    if bugreport_path:
-                        dumpstate_content = find_dumpstate_content(bugreport_path)
-                
-                if "MemFree" in metric:
-                    val = mem_data.get('MemFree', 0.0)
-                elif "MemAvailable" in metric:
-                    val = mem_data.get('MemAvailable', 0.0)
-                elif "App PSS" in metric and dumpstate_content:
-                    val = parse_pss_for_app(dumpstate_content, app_name)
-                elif "Pageboostd" in metric and dumpstate_content:
-                    val = parse_pageboostd_for_app(dumpstate_content, app_name)
-                else:
-                    val = 0.0
+                if dut_cycle is not None:
+                    extend_data = dut_cycle.get('Precomputed_Extend_Data', {})
+                    if "MemFree" in metric:
+                        val = extend_data.get('MemFree', 0.0)
+                    elif "MemAvailable" in metric:
+                        val = extend_data.get('MemAvailable', 0.0)
+                    elif "App PSS" in metric:
+                        val = extend_data.get('App_PSS', 0.0)
+                    elif "Pageboostd" in metric:
+                        val = extend_data.get('Pageboostd', 0.0)
                     
                 ws.write(row_idx, 1 + i, val if val > 0 else "", fmt_section_value)
                 if val > 0:
@@ -1030,24 +1033,29 @@ def create_sheet(
             
             # Get memory data for REF
             if i < num_ref_cycles and ref_folder_path:
-                mem_data = get_memory_data_for_cycle(ref_folder_path, app_name, i)
                 # Use ref_cycles directly (not adjusted) to ensure trace_mapping is available
                 ref_cycle = ref_cycles[i] if i < len(ref_cycles) else None
-                dumpstate_content = None
-                if ref_cycle:
-                    trace_mapping_info = ref_cycle.get('trace_mapping', {})
-                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
-                    if bugreport_path:
-                        dumpstate_content = find_dumpstate_content(bugreport_path)
                 
                 if "MemFree" in metric:
-                    val = mem_data.get('MemFree', 0.0)
+                    val = 0.0
+                    if ref_cycle is not None:
+                        extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                        val = extend_data.get('MemFree', 0.0)
                 elif "MemAvailable" in metric:
-                    val = mem_data.get('MemAvailable', 0.0)
-                elif "App PSS" in metric and dumpstate_content:
-                    val = parse_pss_for_app(dumpstate_content, app_name)
-                elif "Pageboostd" in metric and dumpstate_content:
-                    val = parse_pageboostd_for_app(dumpstate_content, app_name)
+                    val = 0.0
+                    if ref_cycle is not None:
+                        extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                        val = extend_data.get('MemAvailable', 0.0)
+                elif "App PSS" in metric:
+                    val = 0.0
+                    if ref_cycle is not None:
+                        extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                        val = extend_data.get('App_PSS', 0.0)
+                elif "Pageboostd" in metric:
+                    val = 0.0
+                    if ref_cycle is not None:
+                        extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                        val = extend_data.get('Pageboostd', 0.0)
                 else:
                     val = 0.0
                     
@@ -1184,51 +1192,43 @@ def create_sheet(
         ws.write(row_idx, 0, metric, fmt_label)
         
         for i in range(max_cycles):
-            # Get DUT abnormal data
+            # Get DUT abnormal data — [REFACTORED] Đọc từ Precomputed_Extend_Data
             dut_val = ""
             if i < len(dut_cycles):
                 dut_cycle = dut_cycles[i]
                 if dut_cycle:
-                    trace_mapping_info = dut_cycle.get('trace_mapping', {})
-                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
-                    if bugreport_path:
-                        dumpstate_content = find_dumpstate_content(bugreport_path)
-                        if dumpstate_content:
-                            if "Uptime" in metric:
-                                dut_val = parse_uptime(dumpstate_content)
-                            elif metric == "Start reason":
-                                dut_val = parse_start_reasons(dumpstate_content, app_name)
-                            elif metric == "Kill reason":
-                                reasons = parse_kill_reasons(dumpstate_content, app_name)
-                                dut_val = ", ".join(reasons) if reasons else ""
-                            elif metric == "Crash count":
-                                dut_val = count_crashes(dumpstate_content)
-                            elif metric == "Compiler":
-                                dut_val = parse_compiler_type(dumpstate_content, app_name)
+                    extend_data = dut_cycle.get('Precomputed_Extend_Data', {})
+                    if "Uptime" in metric:
+                        dut_val = extend_data.get('Uptime', "")
+                    elif metric == "Start reason":
+                        dut_val = extend_data.get('Start_Reason', "")
+                    elif metric == "Kill reason":
+                        reasons = extend_data.get('Kill_Reason', [])
+                        dut_val = ", ".join(reasons) if reasons else ""
+                    elif metric == "Crash count":
+                        dut_val = extend_data.get('Crash_Count', "")
+                    elif metric == "Compiler":
+                        dut_val = extend_data.get('Compiler', "")
             
             ws.write(row_idx, 1 + i, dut_val, fmt_section_text if isinstance(dut_val, str) else fmt_section_value)
             
-            # Get REF abnormal data
+            # Get REF abnormal data — [REFACTORED] Đọc từ Precomputed_Extend_Data
             ref_val = ""
             if i < len(ref_cycles):
                 ref_cycle = ref_cycles[i]
                 if ref_cycle:
-                    trace_mapping_info = ref_cycle.get('trace_mapping', {})
-                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
-                    if bugreport_path:
-                        dumpstate_content = find_dumpstate_content(bugreport_path)
-                        if dumpstate_content:
-                            if "Uptime" in metric:
-                                ref_val = parse_uptime(dumpstate_content)
-                            elif metric == "Start reason":
-                                ref_val = parse_start_reasons(dumpstate_content, app_name)
-                            elif metric == "Kill reason":
-                                reasons = parse_kill_reasons(dumpstate_content, app_name)
-                                ref_val = ", ".join(reasons) if reasons else ""
-                            elif metric == "Crash count":
-                                ref_val = count_crashes(dumpstate_content)
-                            elif metric == "Compiler":
-                                ref_val = parse_compiler_type(dumpstate_content, app_name)
+                    extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                    if "Uptime" in metric:
+                        ref_val = extend_data.get('Uptime', "")
+                    elif metric == "Start reason":
+                        ref_val = extend_data.get('Start_Reason', "")
+                    elif metric == "Kill reason":
+                        reasons = extend_data.get('Kill_Reason', [])
+                        ref_val = ", ".join(reasons) if reasons else ""
+                    elif metric == "Crash count":
+                        ref_val = extend_data.get('Crash_Count', "")
+                    elif metric == "Compiler":
+                        ref_val = extend_data.get('Compiler', "")
             
             ws.write(row_idx, dut_avg_col + 1 + i, ref_val, fmt_section_text if isinstance(ref_val, str) else fmt_section_value)
         
@@ -1729,6 +1729,115 @@ def create_sheet(
                     row_idx += 1
 
 
+    # # ---------------------------------------------------------
+    # # === LAYOUT ANALYSIS (UNIQUE SLICES) (NEW) ===
+    # # ---------------------------------------------------------
+    # row_idx += 3
+    
+    # # Formats
+    # fmt_layout_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFDAB9", "border": 1, "border_color": "#000000"}) # Peach Puff
+    # fmt_layout_cat = wb.add_format({"bold": True, "align": "left", "bg_color": "#808080", "font_color": "#FFFFFF", "border": 1}) # Dark Grey
+    # fmt_layout_depth = wb.add_format({"bold": True, "align": "left", "indent": 1, "bg_color": "#F0F8FF", "border": 1}) # Alice Blue
+    # fmt_layout_val = wb.add_format({"align": "left", "text_wrap": True, "valign": "top", "border": 1, "font_size": 9}) # Wrap text cho dễ đọc
+
+    # # Prepare Data
+    # all_dut_layout = [cycle.get("Layout_Data", {}) if cycle else {} for cycle in dut_cycles]
+    # all_ref_layout = [cycle.get("Layout_Data", {}) if cycle else {} for cycle in ref_cycles]
+    
+    # layout_cats = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
+    # max_depth_check = 6
+    
+    # # Check data exists
+    # has_layout_data = False
+    # for d in all_dut_layout + all_ref_layout:
+    #     if d: has_layout_data = True; break
+        
+    # if has_layout_data:
+    #     # 1. Header Structure
+    #     ws.merge_range(row_idx, 0, row_idx, 0, "Unique Layout Analysis (Set Diff)", fmt_layout_header)
+    #     col_idx = 1
+    #     for i in range(len(dut_cycles)):
+    #         ws.write(row_idx, col_idx, f"DUT Cy{i+1} (Unique)", fmt_layout_header)
+    #         col_idx += 1
+    #     for i in range(len(ref_cycles)):
+    #         ws.write(row_idx, col_idx, f"REF Cy{i+1} (Unique)", fmt_layout_header)
+    #         col_idx += 1
+    #     row_idx += 1
+        
+    #     # 2. Loop Categories
+    #     for cat in layout_cats:
+    #         # Draw Category Header (Merged)
+    #         last_col = 1 + len(dut_cycles) + len(ref_cycles) - 1
+    #         ws.merge_range(row_idx, 0, row_idx, last_col, cat, fmt_layout_cat)
+    #         row_idx += 1
+            
+    #         # 3. Loop Depths
+    #         for depth in range(max_depth_check + 1):
+    #             ws.write(row_idx, 0, f"Depth {depth}", fmt_layout_depth)
+    #             col_idx = 1
+                
+    #             # Để so sánh, ta cần dữ liệu của cả DUT và REF tại cycle i.
+    #             # Giả sử so sánh cặp: DUT Cy1 vs REF Cy1. 
+    #             # Nếu thiếu 1 bên (vd REF không có Cy3), thì bên còn lại coi như Unique toàn bộ.
+                
+    #             # --- FILL DUT COLUMNS ---
+    #             for i in range(len(dut_cycles)):
+    #                 val_str = ""
+    #                 if i < len(all_dut_layout):
+    #                     dut_slices = []
+    #                     if all_dut_layout[i].get(cat):
+    #                         dut_slices = all_dut_layout[i][cat].get(depth, [])
+                        
+    #                     # Lấy REF tương ứng để compare
+    #                     ref_slices = []
+    #                     if i < len(all_ref_layout) and all_ref_layout[i].get(cat):
+    #                         ref_slices = all_ref_layout[i][cat].get(depth, [])
+                            
+    #                     # Logic: DUT Unique = DUT - REF
+    #                     dut_set = set(dut_slices)
+    #                     ref_set = set(ref_slices)
+                        
+    #                     diff = dut_set - ref_set
+                        
+    #                     if diff:
+    #                         # Convert back to list and sort for readability
+    #                         val_str = ", ".join(sorted(list(diff)))
+    #                     elif not dut_set and not ref_set:
+    #                         val_str = "" # Cả 2 đều trống
+    #                     elif not diff:
+    #                         val_str = "" # Giống hệt nhau (hoặc DUT là tập con của REF)
+
+    #                 ws.write(row_idx, col_idx, val_str, fmt_layout_val)
+    #                 col_idx += 1
+                    
+    #             # --- FILL REF COLUMNS ---
+    #             for i in range(len(ref_cycles)):
+    #                 val_str = ""
+    #                 if i < len(all_ref_layout):
+    #                     ref_slices = []
+    #                     if all_ref_layout[i].get(cat):
+    #                         ref_slices = all_ref_layout[i][cat].get(depth, [])
+                            
+    #                     # Lấy DUT tương ứng để compare
+    #                     dut_slices = []
+    #                     if i < len(all_dut_layout) and all_dut_layout[i].get(cat):
+    #                         dut_slices = all_dut_layout[i][cat].get(depth, [])
+                            
+    #                     # Logic: REF Unique = REF - DUT
+    #                     dut_set = set(dut_slices)
+    #                     ref_set = set(ref_slices)
+                        
+    #                     diff = ref_set - dut_set
+                        
+    #                     if diff:
+    #                         val_str = ", ".join(sorted(list(diff)))
+
+    #                 ws.write(row_idx, col_idx, val_str, fmt_layout_val)
+    #                 col_idx += 1
+                
+    #             # Tăng row sau mỗi Depth
+    #             row_idx += 1
+
     # =============== Top Block I/O Table (MOVED TO POSITION 5) ================
     row_idx += 3
     
@@ -2135,29 +2244,32 @@ def export_avg_to_json(
     ref_folder_path: str = ""
 ) -> None:
     """
-    Xuất toàn bộ Avg metrics ra file JSON.
-    - data_dut.json: Chứa tất cả Avg của DUT
-    - data_ref.json: Chứa tất cả Avg của REF
-    
-    Bao gồm tất cả các bảng: sequence, extend, top CPU, priority, block I/O
-    Args:
-        dut_folder_path: Đường dẫn DUT folder để parse dumpstate
-        ref_folder_path: Đường dẫn REF folder để parse dumpstate
+    Xuất metrics ra file JSON.
+    [UPDATED v2]
+    - Tách thành nhiều file JSON theo từng app (app_name_dut.json, app_name_ref.json)
+    - Chỉ lấy entry data, bỏ reentry
+    - Bỏ top_cpu_by_cycle data (process + thread)
     """
     
-    def calculate_avg_metrics(cycles: List[Dict[str, Any]], app_name: str, launch_type: str, folder_path: str = "") -> Dict[str, Any]:
-        """Tính toán Avg cho tất cả metrics của một app/launch_type"""
-        if not cycles:
-            return {}
+    def calculate_metrics_for_app(cycles: List[Dict[str, Any]], app_name: str, launch_type: str, folder_path: str = "") -> Dict[str, Any]:
+        """Tính toán metrics cho một app/launch_type"""
+        if not cycles: return {}
         
-        valid_cycles = [c for c in cycles if c is not None]
-        if not valid_cycles:
-            return {}
+        # Lấy danh sách các cycle hợp lệ (không bị None)
+        valid_cycles_with_idx = [(i, c) for i, c in enumerate(cycles) if c is not None]
+        if not valid_cycles_with_idx: return {}
         
+        valid_cycles = [c for _, c in valid_cycles_with_idx]
         result = {}
+
+        # ========================
+        # 0. STATE (Per Cycle)
+        # ========================
+        current_state = "Cold" if launch_type == "entry" else "Warm"
+        result["State"] = [current_state for _ in valid_cycles]
         
         # ========================
-        # 1. SEQUENCE METRICS (App Execution Time, Running, Runnable, etc.)
+        # 1. SEQUENCE METRICS (AVG)
         # ========================
         sequence_metrics = [
             "App Execution Time", "Touch Down ~ Start Proc", "Start Proc",
@@ -2168,32 +2280,64 @@ def export_avg_to_json(
             "ActivityResume ~ Choreographer", "Choreographer",
             "Choreographer ~ ActivityIdle", "ActivityIdle", "ActivityIdle ~ Animating end",
             "Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
-            # Camera specific
             "onCreate", "OpenCameraRequest", "onResume", "StartPreviewRequest"
         ]
+        
+        # [NEW] Định nghĩa lại keys để mask giống hệt Excel
+        COLD_ONLY_KEYS = {
+            "Touch Down ~ Start Proc", "Start Proc", "Start Proc ~ ActivityThreadMain",
+            "Activity Thread Main", "ActivityThreadMain ~ bindApplication",
+            "Bind Application", "bindApplication ~ activityStart"
+        }
+        WARM_ONLY_KEYS = {
+            "Touch Duration", "Touch Up ~ Activity Start"
+        }
         
         sequence_data = {}
         for metric in sequence_metrics:
             values = []
             for cycle in valid_cycles:
+                # [NEW] Masking Logic: Bỏ qua metric nếu không đúng loại Launch Type
+                # c_type = cycle.get("Launch Type")
+                c_type = "Cold" if launch_type == "entry" else "Warm"
+                if c_type == "Cold" and metric in WARM_ONLY_KEYS:
+                    continue  # Bỏ qua Touch Duration cho cycle Cold
+                if c_type == "Warm" and metric in COLD_ONLY_KEYS:
+                    continue  # Bỏ qua Start Proc... cho cycle Warm
+                
                 val = cycle.get(metric, 0.0)
-                if val and val > 0:
+                if val and val > 0: 
                     values.append(float(val))
-            if values:
+                    
+            if values: 
                 sequence_data[metric] = round(sum(values) / len(values), 3)
-        
-        if sequence_data:
-            result["sequence"] = sequence_data
+                
+        if sequence_data: result["sequence"] = sequence_data
         
         # ========================
-        # 2. EXTEND METRICS (Memory, LoadApkAssets summary, Abnormal)
+        # 2. EXTEND METRICS
         # ========================
         extend_data = {}
+
+        # 2.1 START PROCESS ABNORMAL (List of Lists per Cycle)
+        abnormal_process_list = []
         
-        # --- 2.1 LoadApkAssets categories (tổng thời gian mỗi category) ---
+        for cycle in valid_cycles:
+            cycle_procs = []
+            bg_states = cycle.get("Abnormal_Process_Data", [])
+            if bg_states:
+                for item in bg_states:
+                    p_name = item.get('proc_name', '')
+                    if p_name:
+                        cycle_procs.append(p_name)
+            
+            abnormal_process_list.append(cycle_procs)
+            
+        extend_data["start_process_abnormal"] = abnormal_process_list
+
+        # 2.2 LoadApkAssets
         loadapk_categories = ["system_server", "system_ui", "launching_app"]
         loadapk_data = {}
-        
         for category in loadapk_categories:
             values = []
             for cycle in valid_cycles:
@@ -2201,513 +2345,363 @@ def export_avg_to_json(
                 if isinstance(cycle_loadapk, dict):
                     assets = cycle_loadapk.get(category, [])
                     total = sum(item.get('dur_ms', 0.0) for item in assets)
-                    if total > 0:
-                        values.append(total)
-            if values:
-                loadapk_data[category] = round(sum(values) / len(values), 3)
+                    if total > 0: values.append(total)
+            if values: loadapk_data[category] = round(sum(values) / len(values), 3)
+        if loadapk_data: extend_data["loadapkassets"] = loadapk_data
         
-        if loadapk_data:
-            extend_data["loadapkassets"] = loadapk_data
-        
-        # --- 2.2 Memory Data (từ meminfo và dumpstate) ---
+        # 2.3 Memory — [REFACTORED] Đọc từ Precomputed_Extend_Data
         if folder_path:
             memory_data = {}
-            mem_free_values = []
-            mem_available_values = []
-            app_pss_values = []
-            pageboostd_values = []
+            mem_free_vals, mem_avail_vals, pss_vals, pb_vals = [], [], [], []
             
-            for i, cycle in enumerate(valid_cycles):
-                # Lấy memory data từ file meminfo
-                mem_data = get_memory_data_for_cycle(folder_path, app_name, i)
-                if mem_data:
-                    mem_free = mem_data.get('MemFree', 0.0)
-                    mem_available = mem_data.get('MemAvailable', 0.0)
-                    if mem_free > 0:
-                        mem_free_values.append(mem_free)
-                    if mem_available > 0:
-                        mem_available_values.append(mem_available)
+            for idx, cycle in valid_cycles_with_idx:
+                precomp = cycle.get('Precomputed_Extend_Data', {})
                 
-                # Lấy PSS và Pageboostd từ dumpstate
-                trace_mapping_info = cycle.get('trace_mapping', {})
-                bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
-                if bugreport_path:
-                    dumpstate_content = find_dumpstate_content(bugreport_path)
-                    if dumpstate_content:
-                        pss = parse_pss_for_app(dumpstate_content, app_name)
-                        pageboostd = parse_pageboostd_for_app(dumpstate_content, app_name)
-                        if pss and pss > 0:
-                            app_pss_values.append(pss)
-                        if pageboostd and pageboostd > 0:
-                            pageboostd_values.append(pageboostd)
+                mem_free = precomp.get('MemFree', 0.0)
+                if mem_free > 0: mem_free_vals.append(mem_free)
+                
+                mem_avail = precomp.get('MemAvailable', 0.0)
+                if mem_avail > 0: mem_avail_vals.append(mem_avail)
+                
+                pss = precomp.get('App_PSS', 0.0)
+                if pss > 0: pss_vals.append(pss)
+                
+                pb = precomp.get('Pageboostd', 0.0)
+                if pb > 0: pb_vals.append(pb)
+
+            if mem_free_vals: memory_data["MemFree_MB"] = round(sum(mem_free_vals)/len(mem_free_vals), 2)
+            if mem_avail_vals: memory_data["MemAvailable_MB"] = round(sum(mem_avail_vals)/len(mem_avail_vals), 2)
+            if pss_vals: memory_data["App_PSS_MB"] = round(sum(pss_vals)/len(pss_vals), 2)
+            if pb_vals: memory_data["Pageboostd_MB"] = round(sum(pb_vals)/len(pb_vals), 2)
+            if memory_data: extend_data["memory"] = memory_data
             
-            if mem_free_values:
-                memory_data["MemFree_KB"] = round(sum(mem_free_values) / len(mem_free_values), 2)
-            if mem_available_values:
-                memory_data["MemAvailable_KB"] = round(sum(mem_available_values) / len(mem_available_values), 2)
-            if app_pss_values:
-                memory_data["App_PSS_KB"] = round(sum(app_pss_values) / len(app_pss_values), 2)
-            if pageboostd_values:
-                memory_data["Pageboostd_KB"] = round(sum(pageboostd_values) / len(pageboostd_values), 2)
-            
-            if memory_data:
-                extend_data["memory"] = memory_data
-        
-        # --- 2.3 Abnormal Info (từ dumpstate) ---
+        # 2.4 Abnormal — [REFACTORED] Đọc từ Precomputed_Extend_Data
         if folder_path:
             abnormal_info = {}
-            uptime_values = []
-            start_reasons_all = []
-            kill_reasons_all = []
-            crash_counts = []
-            compiler_types = []
+            uptime_vals, kill_reasons, crash_counts, compilers = [], [], [], []
             
-            for cycle in valid_cycles:
-                trace_mapping_info = cycle.get('trace_mapping', {})
-                bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
-                if bugreport_path:
-                    dumpstate_content = find_dumpstate_content(bugreport_path)
-                    if dumpstate_content:
-                        # Uptime
-                        uptime = parse_uptime(dumpstate_content)
-                        if uptime and uptime > 0:
-                            uptime_values.append(uptime)
-                        
-                        # Start reason
-                        start_reason = parse_start_reasons(dumpstate_content, app_name)
-                        if start_reason:
-                            start_reasons_all.append(start_reason)
-                        
-                        # Kill reason
-                        kill_reasons = parse_kill_reasons(dumpstate_content, app_name)
-                        if kill_reasons:
-                            kill_reasons_all.extend(kill_reasons)
-                        
-                        # Crash count
-                        crash_count = count_crashes(dumpstate_content)
-                        if crash_count and crash_count > 0:
-                            crash_counts.append(crash_count)
-                        
-                        # Compiler type
-                        compiler = parse_compiler_type(dumpstate_content, app_name)
-                        if compiler:
-                            compiler_types.append(compiler)
-            
-            if uptime_values:
-                abnormal_info["uptime_minutes"] = round(sum(uptime_values) / len(uptime_values), 2)
-            if start_reasons_all:
-                # Lấy giá trị xuất hiện nhiều nhất
+            for _, cycle in valid_cycles_with_idx:
+                precomp = cycle.get('Precomputed_Extend_Data', {})
+                
+                ut = precomp.get('Uptime', 0)
+                if ut and ut > 0: uptime_vals.append(ut)
+                
+                kr = precomp.get('Kill_Reason', [])
+                if kr: kill_reasons.extend(kr)
+                
+                cc = precomp.get('Crash_Count', 0)
+                if cc and cc > 0: crash_counts.append(cc)
+                
+                ct = precomp.get('Compiler', '')
+                if ct: compilers.append(ct)
+
+            if uptime_vals: abnormal_info["uptime_minutes"] = round(sum(uptime_vals)/len(uptime_vals), 2)
+            if kill_reasons: abnormal_info["kill_reasons"] = list(set(kill_reasons))
+            if crash_counts: abnormal_info["crash_count_avg"] = round(sum(crash_counts)/len(crash_counts), 1)
+            if compilers:
                 from collections import Counter
-                most_common = Counter(start_reasons_all).most_common(1)
-                if most_common:
-                    abnormal_info["start_reason"] = most_common[0][0]
-            if kill_reasons_all:
-                # Unique kill reasons
-                abnormal_info["kill_reasons"] = list(set(kill_reasons_all))
-            if crash_counts:
-                abnormal_info["crash_count_avg"] = round(sum(crash_counts) / len(crash_counts), 1)
-            if compiler_types:
-                from collections import Counter
-                most_common = Counter(compiler_types).most_common(1)
-                if most_common:
-                    abnormal_info["compiler"] = most_common[0][0]
+                abnormal_info["compiler"] = Counter(compilers).most_common(1)[0][0]
+            if abnormal_info: extend_data["abnormal"] = abnormal_info
+        
+        if extend_data: result["extend"] = extend_data
+
+        # =========================================================
+        # 3. TOP CPU (BY CYCLE) - [REMOVED]
+        # =========================================================
+        # Bỏ theo yêu cầu - không cần top_cpu_by_cycle
+
+        # =========================================================
+        # 4. PRIORITY STATICS (BY CYCLE)
+        # =========================================================
+        priority_cycles_data = []
+        prio_categories = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
+        
+        for idx, cycle in valid_cycles_with_idx:
+            prio_data = cycle.get("Priority_Data", {})
+            cycle_result = {}
+            has_data = False
             
-            if abnormal_info:
-                extend_data["abnormal"] = abnormal_info
-        
-        # --- 2.4 Abnormal Process Start Overlap ---
-        # Thu thập process start overlap từ Abnormal_Process_Data và Background_Process_States
-        all_abnormal_procs = set()
-        all_bg_procs = set()
-        
-        for cycle in valid_cycles:
-            # Abnormal process data
-            abnormal = cycle.get("Abnormal_Process_Data", [])
-            for p in abnormal:
-                name = p.get('proc_name', '')
-                if name and name != 'Unknown':
-                    all_abnormal_procs.add(name)
-            
-            # Background process states
-            bg = cycle.get("Background_Process_States", [])
-            for p in bg:
-                name = p.get('Thread name', '')
-                if name and name != 'Unknown':
-                    all_bg_procs.add(name)
-        
-        if all_abnormal_procs:
-            extend_data["abnormal_process_start"] = sorted(list(all_abnormal_procs))
-        
-        if all_bg_procs:
-            extend_data["background_process_active"] = sorted(list(all_bg_procs))
-        
-        if extend_data:
-            result["extend"] = extend_data
-        
-        # ========================
-        # 3. TOP CPU (Process và Thread)
-        # ========================
-        cpu_process_data = {}
-        cpu_thread_data = {}
-        
-        # Gộp tất cả process từ các cycles
-        all_proc_by_name = defaultdict(list)
-        for cycle in valid_cycles:
-            procs = cycle.get("CPU_Process_Data", [])
-            for p in procs:
-                name = p.get('dumpstate_name') or p.get('sql_name', 'Unknown')
-                dur = p.get('dur_ms', 0.0)
-                if dur > 0:
-                    all_proc_by_name[name].append(dur)
-        
-        # Tính Avg và lấy Top 10
-        proc_avgs = []
-        for name, values in all_proc_by_name.items():
-            avg = sum(values) / len(values)
-            proc_avgs.append((name, round(avg, 3)))
-        
-        proc_avgs.sort(key=lambda x: x[1], reverse=True)
-        cpu_process_data = {name: val for name, val in proc_avgs[:10]}
-        
-        # Tương tự cho Thread
-        all_thread_by_name = defaultdict(list)
-        for cycle in valid_cycles:
-            threads = cycle.get("CPU_Thread_Data", [])
-            for t in threads:
-                name = f"{t.get('thread_name', 'Unknown')} ({t.get('proc_name', 'Unknown')})"
-                dur = t.get('dur_ms', 0.0)
-                if dur > 0:
-                    all_thread_by_name[name].append(dur)
-        
-        thread_avgs = []
-        for name, values in all_thread_by_name.items():
-            avg = sum(values) / len(values)
-            thread_avgs.append((name, round(avg, 3)))
-        
-        thread_avgs.sort(key=lambda x: x[1], reverse=True)
-        cpu_thread_data = {name: val for name, val in thread_avgs[:10]}
-        
-        if cpu_process_data or cpu_thread_data:
-            result["top_cpu"] = {
-                "process": cpu_process_data,
-                "thread": cpu_thread_data
-            }
-        
-        # ========================
-        # 4. PRIORITY STATICS
-        # ========================
-        priority_data = {}
-        categories = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
-        
-        for category in categories:
-            cat_prio_sums = defaultdict(list)
-            
-            for cycle in valid_cycles:
-                prio_data = cycle.get("Priority_Data", {})
-                cat_data = prio_data.get(category, {})
-                if cat_data:
-                    total = sum(cat_data.values())
-                    if total > 0:
-                        # Gộp theo priority
-                        prio_totals = defaultdict(float)
-                        for key, val in cat_data.items():
+            for cat in prio_categories:
+                if cat in prio_data and prio_data[cat]:
+                    raw_map = prio_data[cat]
+                    total_dur = sum(raw_map.values())
+                    
+                    if total_dur > 0:
+                        prio_acc = defaultdict(float)
+                        freq_acc = defaultdict(float)
+                        
+                        for key, val_ms in raw_map.items():
                             parts = str(key).split('_')
-                            prio_id = parts[0]
-                            prio_totals[prio_id] += val
+                            if len(parts) >= 1:
+                                p_id = parts[0]
+                                prio_acc[p_id] += val_ms
+                                if len(parts) >= 2 and parts[1] != "0":
+                                    freq_acc[parts[1]] += val_ms
+
+                        prio_pct = {k: round((v/total_dur)*100, 2) for k, v in prio_acc.items()}
+                        freq_pct = {k: round((v/total_dur)*100, 2) for k, v in freq_acc.items()}
                         
-                        for prio_id, prio_val in prio_totals.items():
-                            pct = prio_val / total
-                            cat_prio_sums[prio_id].append(pct)
+                        cycle_result[cat] = {"priority": prio_pct, "frequency": freq_pct}
+                        has_data = True
             
-            if cat_prio_sums:
-                category_result = {}
-                for prio_id, pcts in cat_prio_sums.items():
-                    avg_pct = sum(pcts) / len(pcts)
-                    category_result[prio_id] = round(avg_pct * 100, 2)  # Convert to %
-                priority_data[category] = category_result
-        
-        if priority_data:
-            result["priority"] = priority_data
-        
-        # ========================
+            if has_data: priority_cycles_data.append({"cycle": idx + 1, "data": cycle_result})
+        if priority_cycles_data: result["priority_by_cycle"] = priority_cycles_data
+
         # 5. BLOCK I/O
-        # ========================
-        block_io_data = {}
-        all_lib_times = defaultdict(list)
+        bio_cycles = []
+        for idx, cycle in valid_cycles_with_idx:
+            bio = sorted(cycle.get("Block_IO_Data", []), key=lambda x: x.get('timeTotalMs', 0), reverse=True)[:10]
+            bio_list = [{"name": x.get('libraryName', 'Unknown'), "val": x.get('timeTotalMs', 0)} for x in bio]
+            if bio_list: bio_cycles.append({"cycle": idx+1, "data": bio_list})
+        if bio_cycles: result["block_io_by_cycle"] = bio_cycles
         
+        # 6. BINDER
+        b_durs, b_counts = [], []
         for cycle in valid_cycles:
-            bio = cycle.get("Block_IO_Data", [])
-            for item in bio:
-                name = item.get('libraryName', 'Unknown')
-                dur = item.get('timeTotal_ms', 0.0)
-                if dur > 0:
-                    all_lib_times[name].append(dur)
-        
-        lib_avgs = []
-        for name, values in all_lib_times.items():
-            avg = sum(values) / len(values)
-            lib_avgs.append((name, round(avg, 3)))
-        
-        lib_avgs.sort(key=lambda x: x[1], reverse=True)
-        block_io_data = {name: val for name, val in lib_avgs[:20]}  # Top 20
-        
-        if block_io_data:
-            result["block_io"] = block_io_data
-        
-        # ========================
-        # 6. BINDER TRANSACTION
-        # ========================
-        binder_dur_values = []
-        binder_count_values = []
-        
-        for cycle in valid_cycles:
-            binder = cycle.get("Binder_Transaction_Data", {})
-            dur = binder.get('duration_ms', 0.0)
-            count = binder.get('count', 0)
-            if dur > 0:
-                binder_dur_values.append(dur)
-            if count > 0:
-                binder_count_values.append(count)
-        
-        if binder_dur_values or binder_count_values:
+            b = cycle.get("Binder_Transaction_Data", {})
+            if b.get('duration_ms', 0) > 0: b_durs.append(b['duration_ms'])
+            if b.get('count', 0) > 0: b_counts.append(b['count'])
+        if b_durs or b_counts:
             result["binder_transaction"] = {
-                "duration_ms": round(sum(binder_dur_values) / len(binder_dur_values), 3) if binder_dur_values else 0,
-                "count": int(sum(binder_count_values) / len(binder_count_values)) if binder_count_values else 0
+                "duration_ms": round(sum(b_durs)/len(b_durs), 3) if b_durs else 0,
+                "count": int(sum(b_counts)/len(b_counts)) if b_counts else 0
             }
-        
+
         return result
-    
+
     # =====================
-    # BUILD JSON DATA
+    # BUILD & WRITE PER-APP JSON FILES
     # =====================
     timestamp = datetime.datetime.now().isoformat()
     
-    # DUT Data
-    dut_json = {
-        "device_code": dut_device_code,
-        "timestamp": timestamp,
-        "apps": {}
-    }
+    # Lấy danh sách tất cả apps từ cả DUT và REF
+    all_apps = set(dut_results.keys()) | set(ref_results.keys())
     
-    for app_name, categories in dut_results.items():
-        app_data = {}
-        for launch_type in ["entry", "reentry"]:
-            cycles = categories.get(launch_type, [])
-            metrics = calculate_avg_metrics(cycles, app_name, launch_type, dut_folder_path)
-            if metrics:
-                app_data[launch_type] = metrics
-        if app_data:
-            dut_json["apps"][app_name] = app_data
-    
-    # REF Data
-    ref_json = {
-        "device_code": ref_device_code,
-        "timestamp": timestamp,
-        "apps": {}
-    }
-    
-    for app_name, categories in ref_results.items():
-        app_data = {}
-        for launch_type in ["entry", "reentry"]:
-            cycles = categories.get(launch_type, [])
-            metrics = calculate_avg_metrics(cycles, app_name, launch_type, ref_folder_path)
-            if metrics:
-                app_data[launch_type] = metrics
-        if app_data:
-            ref_json["apps"][app_name] = app_data
-    
-    # =====================
-    # WRITE FILES
-    # =====================
-    # Tạo folder Output trong DUT folder
+    # Tạo output directory
     output_dir = os.path.join(output_folder, "Output")
     os.makedirs(output_dir, exist_ok=True)
     
-    # Write data_dut.json
-    dut_json_path = os.path.join(output_dir, "data_dut.json")
-    with open(dut_json_path, 'w', encoding='utf-8') as f:
-        json.dump(dut_json, f, indent=2, ensure_ascii=False)
-    print(f"\n Created: {dut_json_path}")
+    print(f"\n Exporting per-app JSON files...")
     
-    # Write data_ref.json
-    ref_json_path = os.path.join(output_dir, "data_ref.json")
-    with open(ref_json_path, 'w', encoding='utf-8') as f:
-        json.dump(ref_json, f, indent=2, ensure_ascii=False)
-    print(f" Created: {ref_json_path}")
-    
-    # Generate analysis_input.json (combined for Agent analysis)
-    analysis_input = generate_analysis_input(dut_json, ref_json)
-    analysis_path = os.path.join(output_dir, "analysis_input.json")
-    with open(analysis_path, 'w', encoding='utf-8') as f:
-        json.dump(analysis_input, f, indent=2, ensure_ascii=False)
-    print(f" Created: {analysis_path}")
-
-
-def generate_analysis_input(dut_json: Dict, ref_json: Dict) -> Dict:
-    """
-    Generate combined analysis input JSON for Agent to analyze.
-    Contains calculated diffs and context for easy diagnosis.
-    """
-    result = {
-        "_description": "Combined analysis input for performance diagnosis",
-        "_workflow": "Use with .agent/workflows/analyze-performance.md",
-        "timestamp": datetime.datetime.now().isoformat(),
-        "device_codes": {
-            "dut": dut_json.get("device_code", "Unknown"),
-            "ref": ref_json.get("device_code", "Unknown")
-        },
-        "apps": {}
-    }
-    
-    # Get all app names from both DUT and REF
-    all_apps = set(dut_json.get("apps", {}).keys()) | set(ref_json.get("apps", {}).keys())
-    
+    # Export từng app cho DUT và REF
     for app_name in sorted(all_apps):
-        dut_app = dut_json.get("apps", {}).get(app_name, {})
-        ref_app = ref_json.get("apps", {}).get(app_name, {})
-        
-        app_analysis = {}
-        
-        for launch_type in ["entry", "reentry"]:
-            dut_data = dut_app.get(launch_type, {})
-            ref_data = ref_app.get(launch_type, {})
-            
-            if not dut_data and not ref_data:
-                continue
-            
-            launch_analysis = {
-                "state_diff": {},
-                "context": {},
-                "top_cpu": {"process": {}, "thread": {}},
-                "priority": {},
-                "block_io": {},
-                "extend": {},
-                "binder_transaction": {}
-            }
-            
-            # ========== STATE DIFF (Running, Runnable, etc.) ==========
-            state_metrics = ["Running", "Runnable", "Uninterruptible Sleep", "Sleeping", "App Execution Time"]
-            dut_seq = dut_data.get("sequence", {})
-            ref_seq = ref_data.get("sequence", {})
-            
-            for metric in state_metrics:
-                dut_val = dut_seq.get(metric, 0)
-                ref_val = ref_seq.get(metric, 0)
-                diff = round(dut_val - ref_val, 3)
-                
-                launch_analysis["state_diff"][metric] = {
-                    "dut": dut_val,
-                    "ref": ref_val,
-                    "diff": diff,
-                    "issue": diff > 10  # Flag if diff > 10ms
+        # =====================
+        # DUT - Chỉ lấy entry
+        # =====================
+        dut_entry_cycles = dut_results.get(app_name, {}).get("entry", [])
+        if dut_entry_cycles:
+            dut_metrics = calculate_metrics_for_app(dut_entry_cycles, app_name, "entry", dut_folder_path)
+            if dut_metrics:
+                # Flatten structure: device_code, timestamp, type, app, entry
+                dut_json = {
+                    "device_code": dut_device_code,
+                    "timestamp": timestamp,
+                    "type": "DUT",
+                    "app": app_name,
+                    "entry": dut_metrics
                 }
-            
-            # ========== CONTEXT ==========
-            # TODO: Add warm/cold count when available in data
-            launch_analysis["context"] = {
-                "dut_device": dut_json.get("device_code", "Unknown"),
-                "ref_device": ref_json.get("device_code", "Unknown"),
-                "launch_type": launch_type
-            }
-            
-            # ========== TOP CPU DIFF ==========
-            dut_cpu = dut_data.get("top_cpu", {})
-            ref_cpu = ref_data.get("top_cpu", {})
-            
-            # Process diff
-            all_procs = set(dut_cpu.get("process", {}).keys()) | set(ref_cpu.get("process", {}).keys())
-            proc_diffs = []
-            for proc in all_procs:
-                dut_val = dut_cpu.get("process", {}).get(proc, 0)
-                ref_val = ref_cpu.get("process", {}).get(proc, 0)
-                diff = round(dut_val - ref_val, 3)
-                proc_diffs.append({"name": proc, "dut": dut_val, "ref": ref_val, "diff": diff})
-            
-            proc_diffs.sort(key=lambda x: x["diff"], reverse=True)
-            launch_analysis["top_cpu"]["process"] = proc_diffs[:5]  # Top 5 by diff
-            
-            # Thread diff
-            all_threads = set(dut_cpu.get("thread", {}).keys()) | set(ref_cpu.get("thread", {}).keys())
-            thread_diffs = []
-            for thread in all_threads:
-                dut_val = dut_cpu.get("thread", {}).get(thread, 0)
-                ref_val = ref_cpu.get("thread", {}).get(thread, 0)
-                diff = round(dut_val - ref_val, 3)
-                thread_diffs.append({"name": thread, "dut": dut_val, "ref": ref_val, "diff": diff})
-            
-            thread_diffs.sort(key=lambda x: x["diff"], reverse=True)
-            launch_analysis["top_cpu"]["thread"] = thread_diffs[:5]
-            
-            # ========== PRIORITY COMPARISON ==========
-            dut_prio = dut_data.get("priority", {})
-            ref_prio = ref_data.get("priority", {})
-            
-            for category in ["bindApplication", "activityStart", "activityResume", "Choreographer"]:
-                dut_cat = dut_prio.get(category, {})
-                ref_cat = ref_prio.get(category, {})
                 
-                if dut_cat or ref_cat:
-                    all_prios = set(dut_cat.keys()) | set(ref_cat.keys())
-                    prio_comp = {}
-                    for prio in all_prios:
-                        dut_pct = dut_cat.get(prio, 0)
-                        ref_pct = ref_cat.get(prio, 0)
-                        prio_comp[prio] = {
-                            "dut_pct": dut_pct,
-                            "ref_pct": ref_pct,
-                            "diff_pct": round(dut_pct - ref_pct, 2)
-                        }
-                    launch_analysis["priority"][category] = prio_comp
-            
-            # ========== BLOCK I/O DIFF ==========
-            dut_bio = dut_data.get("block_io", {})
-            ref_bio = ref_data.get("block_io", {})
-            
-            all_libs = set(dut_bio.keys()) | set(ref_bio.keys())
-            bio_diffs = []
-            for lib in all_libs:
-                dut_val = dut_bio.get(lib, 0)
-                ref_val = ref_bio.get(lib, 0)
-                diff = round(dut_val - ref_val, 3)
-                bio_diffs.append({"name": lib, "dut": dut_val, "ref": ref_val, "diff": diff})
-            
-            bio_diffs.sort(key=lambda x: x["diff"], reverse=True)
-            launch_analysis["block_io"] = bio_diffs[:10]  # Top 10
-            
-            # ========== EXTEND (LoadApkAssets, Memory, Abnormal) ==========
-            launch_analysis["extend"] = {
-                "dut": dut_data.get("extend", {}),
-                "ref": ref_data.get("extend", {})
-            }
-            
-            # ========== BINDER TRANSACTION ==========
-            dut_binder = dut_data.get("binder_transaction", {})
-            ref_binder = ref_data.get("binder_transaction", {})
-            
-            launch_analysis["binder_transaction"] = {
-                "duration_ms": {
-                    "dut": dut_binder.get("duration_ms", 0),
-                    "ref": ref_binder.get("duration_ms", 0),
-                    "diff": round(dut_binder.get("duration_ms", 0) - ref_binder.get("duration_ms", 0), 3)
-                },
-                "count": {
-                    "dut": dut_binder.get("count", 0),
-                    "ref": ref_binder.get("count", 0),
-                    "diff": dut_binder.get("count", 0) - ref_binder.get("count", 0)
-                }
-            }
-            
-            app_analysis[launch_type] = launch_analysis
+                # Write to file: app_name_dut.json
+                dut_file_path = os.path.join(output_dir, f"{app_name}_dut.json")
+                with open(dut_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(dut_json, f, indent=2, ensure_ascii=False)
+                print(f"  Created: {app_name}_dut.json")
         
-        if app_analysis:
-            result["apps"][app_name] = app_analysis
-    
-    return result
+        # =====================
+        # REF - Chỉ lấy entry
+        # =====================
+        ref_entry_cycles = ref_results.get(app_name, {}).get("entry", [])
+        if ref_entry_cycles:
+            ref_metrics = calculate_metrics_for_app(ref_entry_cycles, app_name, "entry", ref_folder_path)
+            if ref_metrics:
+                # Flatten structure
+                ref_json = {
+                    "device_code": ref_device_code,
+                    "timestamp": timestamp,
+                    "type": "REF",
+                    "app": app_name,
+                    "entry": ref_metrics
+                }
+                
+                # Write to file: app_name_ref.json
+                ref_file_path = os.path.join(output_dir, f"{app_name}_ref.json")
+                with open(ref_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(ref_json, f, indent=2, ensure_ascii=False)
+                print(f"  Created: {app_name}_ref.json")
+
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], extracted: bool):
+    """
+    Xử lý quét Trace với Incremental Smart Cache (Cache Cộng Dồn).
+    Tự động nhận diện App còn thiếu, chỉ quét bù những App đó và gộp vào Cache cũ.
+    """
+    cache_path = os.path.join(folder_path, ".perf_cache.pkl")
+    
+    # Chuẩn hóa danh sách App user yêu cầu hiện tại (None = ALL APPS)
+    current_targets = sorted(target_apps) if target_apps else None
+    
+    cached_data = {}
+    cached_targets = []
+    cache_valid = False
+    
+    # 1. ĐỌC CACHE HIỆN TẠI
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'rb') as f:
+                cache_content = pickle.load(f)
+            
+            # Kiểm tra format và CACHE_VERSION
+            if isinstance(cache_content, dict) and cache_content.get("version") == CACHE_VERSION:
+                cached_targets = cache_content.get("target_apps")
+                cached_data = cache_content.get("data", {})
+                cache_valid = True
+                print(f"  -> [{label}] Found valid cache file (Version {CACHE_VERSION}).")
+            else:
+                print(f"  -> [{label}] Cache version mismatch or invalid format. Ignoring old cache...")
+        except Exception as e:
+            print(f"  -> [{label}] [ERROR] Failed to read cache: {e}. Processing from scratch...")
+
+    # 2. XỬ LÝ LOGIC TÌM APP CÒN THIẾU (MISSING APPS)
+    missing_apps = None # Mặc định None là quét tất cả (ALL APPS)
+    
+    if cache_valid:
+        if current_targets is None:
+            # TH1: User muốn ALL APPS
+            if cached_targets is None:
+                print(f"  -> [{label}] Cache already contains ALL APPS. Loading (⚡)...")
+                return cached_data
+            else:
+                print(f"  -> [{label}] Requested ALL APPS, but cache only has {cached_targets}.")
+                print(f"  -> [{label}] Must process ALL from scratch...")
+                cached_data = {} # Reset data cũ để tạo cache ALL mới
+                
+        else:
+            # TH2: User muốn danh sách App cụ thể
+            if cached_targets is None:
+                # Cache có ALL APPS, chỉ việc trích xuất tập con
+                print(f"  -> [{label}] Cache contains ALL APPS. Extracting {current_targets} (⚡)...")
+                return {app: data for app, data in cached_data.items() if app in current_targets}
+            else:
+                # Tính danh sách App còn thiếu
+                missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
+                
+                if not missing_apps:
+                    print(f"  -> [{label}] All requested apps {current_targets} are in cache. Extracting (⚡)...")
+                    return {app: data for app, data in cached_data.items() if app in current_targets}
+                else:
+                    print(f"  -> [{label}] Cache is missing apps: {missing_apps}.")
+                    print(f"  -> [{label}] Will process ONLY missing apps and MERGE...")
+    else:
+        # Không có cache hợp lệ
+        missing_apps = current_targets
+
+    # 3. CHẠY QUÉT TRACE (CHỈ CHO NHỮNG APP CÒN THIẾU)
+    print(f"  -> [{label}] Processing trace files for: {missing_apps if missing_apps else 'ALL APPS'}...")
+    new_data = process_all_traces(folder_path, label, num_workers, missing_apps, extracted)
+    
+    # 4. GỘP DỮ LIỆU (MERGE)
+    # Gộp từ điển: Data cũ + Data mới
+    merged_data = {**cached_data, **new_data}
+    
+    # Gộp danh sách target_apps
+    if missing_apps is None or cached_targets is None:
+        merged_targets = None # Đại diện cho ALL APPS
+    else:
+        merged_targets = sorted(list(set(cached_targets) | set(missing_apps)))
+
+    # 5. LƯU LẠI CACHE ĐÃ GỘP
+    try:
+        cache_content_to_save = {
+            "version": CACHE_VERSION,
+            "target_apps": merged_targets,
+            "data": merged_data
+        }
+        with open(cache_path, 'wb') as f:
+            pickle.dump(cache_content_to_save, f)
+        print(f"  -> [{label}] Saved MERGED data to cache: {cache_path}")
+    except Exception as e:
+        print(f"  -> [{label}] [WARN] Could not save cache: {e}")
+        
+    # 6. TRẢ VỀ CHÍNH XÁC NHỮNG GÌ USER YÊU CẦU LẦN NÀY
+    if current_targets is None:
+        return merged_data
+    else:
+        # Lọc lại chỉ lấy data của các app nằm trong current_targets
+        return {app: data for app, data in merged_data.items() if app in current_targets}
+
+
+# def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], extracted: bool):
+#     """
+#     Xử lý quét Trace với Smart Cache (Target-App Aware & Subset-Aware).
+#     Có thể trích xuất data nếu user chỉ yêu cầu một phần của Cache.
+#     """
+#     cache_path = os.path.join(folder_path, ".perf_cache.pkl")
+    
+#     # Chuẩn hóa target_apps hiện tại
+#     current_targets = sorted(target_apps) if target_apps else None
+    
+#     if os.path.exists(cache_path):
+#         print(f"  -> [{label}] Found cache file: {cache_path}")
+#         try:
+#             with open(cache_path, 'rb') as f:
+#                 cache_content = pickle.load(f)
+            
+#             if isinstance(cache_content, dict) and "target_apps" in cache_content and "data" in cache_content:
+#                 cached_targets = cache_content["target_apps"]
+#                 cached_data = cache_content["data"]
+                
+#                 # CASE 1: Giống hệt nhau (Khớp 100%)
+#                 if current_targets == cached_targets and cache_content.get("version") == CACHE_VERSION:
+#                     print(f"  -> [{label}] Target apps exactly matched! Loading from cache ...")
+#                     return cached_data
+                
+#                 # CASE 2: Yêu cầu hiện tại là TẬP CON của Cache (Ví dụ: Cache có ALL, user chỉ cần Gallery)
+#                 elif current_targets is not None and cache_content.get("version") == CACHE_VERSION:
+#                     # Nếu Cache lưu ALL (None), hoặc Cache chứa đủ các app đang yêu cầu
+#                     if cached_targets is None or set(current_targets).issubset(set(cached_targets)):
+#                         print(f"  -> [{label}] Requested apps {current_targets} are available in Cache!")
+#                         print(f"  -> [{label}] Extracting subset from cache ...")
+                        
+#                         # Trích xuất riêng data của những app được yêu cầu
+#                         subset_data = {
+#                             app: data for app, data in cached_data.items() 
+#                             if app in current_targets
+#                         }
+#                         return subset_data
+                
+#                 # CASE 3: Yêu cầu thêm App mới mà Cache chưa có (VD: Cache có Gallery, user đòi thêm Camera)
+#                 print(f"  -> [{label}] Target apps missing in cache! (Old: {cached_targets}, Requested: {current_targets})")
+#                 print(f"  -> [{label}] Cache invalidated. Processing from scratch...")
+#             else:
+#                 print(f"  -> [{label}] Old cache format detected. Invalidating...")
+                
+#         except Exception as e:
+#             print(f"  -> [{label}] [ERROR] Failed to read cache: {e}. Processing from scratch...")
+            
+#     # CHẠY QUÉT TỪ ĐẦU (Nếu không có cache hoặc cache không đủ data)
+#     print(f"  -> [{label}] Processing trace files...")
+#     results = process_all_traces(folder_path, label, num_workers, target_apps, extracted)
+    
+#     # LƯU CACHE
+#     try:
+#         cache_content_to_save = {
+#             "version": CACHE_VERSION,
+#             "target_apps": current_targets,
+#             "data": results
+#         }
+#         with open(cache_path, 'wb') as f:
+#             pickle.dump(cache_content_to_save, f)
+#         print(f"  -> [{label}] Saved data & app filter to cache: {cache_path}")
+#     except Exception as e:
+#         print(f"  -> [{label}] [WARN] Could not save cache: {e}")
+        
+#     return results
+
 
 def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None, extracted: bool = False) -> None:
     """
@@ -2734,13 +2728,21 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     
     start_time = datetime.datetime.now()
 
-    # Process DUT folder
-    print("\n[1/2] Processing DUT folder...")
-    dut_results = process_all_traces(dut_folder, "DUT", num_workers, target_apps, extracted)
+    # # Process DUT folder
+    # print("\n[1/2] Processing DUT folder...")
+    # dut_results = process_all_traces(dut_folder, "DUT", num_workers, target_apps, extracted)
     
-    # Process REF folder
+    # # Process REF folder
+    # print("\n[2/2] Processing REF folder...")
+    # ref_results = process_all_traces(ref_folder, "REF", num_workers, target_apps, extracted)
+
+    # Process DUT folder (Sử dụng Cache)
+    print("\n[1/2] Processing DUT folder...")
+    dut_results = get_or_process_folder_with_cache(dut_folder, "DUT", num_workers, target_apps, extracted)
+    
+    # Process REF folder (Sử dụng Cache)
     print("\n[2/2] Processing REF folder...")
-    ref_results = process_all_traces(ref_folder, "REF", num_workers, target_apps, extracted)
+    ref_results = get_or_process_folder_with_cache(ref_folder, "REF", num_workers, target_apps, extracted)
     
     # Extract header title từ file đầu tiên
     dut_files = collect_trace_files(dut_folder)
@@ -2804,3 +2806,52 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Export json v2
+'''
+        # ========================
+        # 1. SEQUENCE METRICS (AVG)
+        # ========================
+        sequence_metrics = [
+            "App Execution Time", "Touch Down ~ Start Proc", "Start Proc",
+            "Start Proc ~ ActivityThreadMain", "Activity Thread Main",
+            "ActivityThreadMain ~ bindApplication", "Bind Application",
+            "bindApplication ~ activityStart", "Touch Duration", "Touch Up ~ Activity Start",
+            "Activity Start", "activityStart ~ activityResume", "Activity Resume",
+            "ActivityResume ~ Choreographer", "Choreographer",
+            "Choreographer ~ ActivityIdle", "ActivityIdle", "ActivityIdle ~ Animating end",
+            "Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
+            "onCreate", "OpenCameraRequest", "onResume", "StartPreviewRequest"
+        ]
+        
+        # [NEW] Định nghĩa lại keys để mask giống hệt Excel
+        COLD_ONLY_KEYS = {
+            "Touch Down ~ Start Proc", "Start Proc", "Start Proc ~ ActivityThreadMain",
+            "Activity Thread Main", "ActivityThreadMain ~ bindApplication",
+            "Bind Application", "bindApplication ~ activityStart"
+        }
+        WARM_ONLY_KEYS = {
+            "Touch Duration", "Touch Up ~ Activity Start"
+        }
+        
+        sequence_data = {}
+        for metric in sequence_metrics:
+            values = []
+            for cycle in valid_cycles:
+                # [NEW] Masking Logic: Bỏ qua metric nếu không đúng loại Launch Type
+                # c_type = cycle.get("Launch Type")
+                c_type = "Cold" if launch_type == "entry" else "Warm"
+                if c_type == "Cold" and metric in WARM_ONLY_KEYS:
+                    continue  # Bỏ qua Touch Duration cho cycle Cold
+                if c_type == "Warm" and metric in COLD_ONLY_KEYS:
+                    continue  # Bỏ qua Start Proc... cho cycle Warm
+                
+                val = cycle.get(metric, 0.0)
+                if val and val > 0: 
+                    values.append(float(val))
+                    
+            if values: 
+                sequence_data[metric] = round(sum(values) / len(values), 3)
+                
+        if sequence_data: result["sequence"] = sequence_data
+'''

@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import zipfile
+import shutil  # <--- Thêm dòng này
 from collections import defaultdict, OrderedDict
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
@@ -29,18 +30,13 @@ APP_MAPPING = {
 
 
 def extract_largest_file_from_zip(zip_path, extract_dir):
-    """Decompress and return biggest file .txt, reuse existing if available"""
+    """Decompress and return biggest file .txt"""
     with zipfile.ZipFile(zip_path, 'r') as z:
         infos = z.infolist()
         if not infos:
             return None
         largest = max(infos, key=lambda x: x.file_size)
         out_path = os.path.join(extract_dir, largest.filename.replace("/", "_"))
-        
-        # Reuse existing file if it already exists
-        if os.path.exists(out_path):
-            return out_path
-        
         with open(out_path, "wb") as f:
             f.write(z.read(largest))
         return out_path
@@ -255,6 +251,18 @@ def diff_pageboostd(folder1, folder2, extracted=False):
     out_path = os.path.join(folder1, f"ComparePageboostd_{prefix1}_{prefix2}.xlsx")
     write_excel(out_path, prefix1, prefix2, cycles1, cycles2)
     print(f"Excel created: {out_path}")
+
+    # --- ĐOẠN CODE MỚI THÊM VÀO ---
+    # Xóa folder _tmp và toàn bộ nội dung bên trong
+    for folder in [folder1, folder2]:
+        tmp_path = os.path.join(folder, "_tmp")
+        if os.path.exists(tmp_path):
+            try:
+                shutil.rmtree(tmp_path)
+                print(f"Cleaned up temporary folder: {tmp_path}")
+            except OSError as e:
+                print(f"Error removing {tmp_path}: {e}")
+    # ------------------------------
 
 
 
