@@ -143,6 +143,7 @@ WARM_ONLY_KEYS = {
 # App name normalization map - fix common typos/misspellings
 APP_NAME_NORMALIZATION = {
     "calender": "calendar",  # Fix "calender" → "calendar"
+    "recorder": "voice"
 }
 
 CACHE_VERSION = "1.0"  # Tăng lên "1.1", "2.0"... 
@@ -1010,41 +1011,20 @@ def create_sheet(
         ref_values = []
         
         for i in range(max_cycles):
-            # Get memory data for DUT
+            # Get memory data for DUT — [REFACTORED] Đọc từ Precomputed_Extend_Data
             if i < num_dut_cycles and dut_folder_path:
-                mem_data = get_memory_data_for_cycle(dut_folder_path, app_name, i)
-                # Get dumpstate content for PSS and Pageboostd
-                # Use dut_cycles directly (not adjusted) to ensure trace_mapping is available
+                val = 0.0
                 dut_cycle = dut_cycles[i] if i < len(dut_cycles) else None
-                dumpstate_content = None
-                if dut_cycle:
-                    trace_mapping_info = dut_cycle.get('trace_mapping', {})
-                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
-                    if bugreport_path:
-                        dumpstate_content = find_dumpstate_content(bugreport_path)
-                
-                if "MemFree" in metric:
-                    val = 0.0
-                    if i < len(dut_cycles) and dut_cycles[i] is not None:
-                        extend_data = dut_cycles[i].get('Precomputed_Extend_Data', {})
+                if dut_cycle is not None:
+                    extend_data = dut_cycle.get('Precomputed_Extend_Data', {})
+                    if "MemFree" in metric:
                         val = extend_data.get('MemFree', 0.0)
-                elif "MemAvailable" in metric:
-                    val = 0.0
-                    if i < len(dut_cycles) and dut_cycles[i] is not None:
-                        extend_data = dut_cycles[i].get('Precomputed_Extend_Data', {})
+                    elif "MemAvailable" in metric:
                         val = extend_data.get('MemAvailable', 0.0)
-                elif "App PSS" in metric and dumpstate_content:
-                    val = 0.0
-                    if i < len(dut_cycles) and dut_cycles[i] is not None:
-                        extend_data = dut_cycles[i].get('Precomputed_Extend_Data', {})
+                    elif "App PSS" in metric:
                         val = extend_data.get('App_PSS', 0.0)
-                elif "Pageboostd" in metric and dumpstate_content:
-                    val = 0.0
-                    if i < len(dut_cycles) and dut_cycles[i] is not None:
-                        extend_data = dut_cycles[i].get('Precomputed_Extend_Data', {})
+                    elif "Pageboostd" in metric:
                         val = extend_data.get('Pageboostd', 0.0)
-                else:
-                    val = 0.0
                     
                 ws.write(row_idx, 1 + i, val if val > 0 else "", fmt_section_value)
                 if val > 0:
@@ -1213,51 +1193,43 @@ def create_sheet(
         ws.write(row_idx, 0, metric, fmt_label)
         
         for i in range(max_cycles):
-            # Get DUT abnormal data
+            # Get DUT abnormal data — [REFACTORED] Đọc từ Precomputed_Extend_Data
             dut_val = ""
             if i < len(dut_cycles):
                 dut_cycle = dut_cycles[i]
                 if dut_cycle:
-                    trace_mapping_info = dut_cycle.get('trace_mapping', {})
-                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
-                    if bugreport_path:
-                        dumpstate_content = find_dumpstate_content(bugreport_path)
-                        if dumpstate_content:
-                            if "Uptime" in metric:
-                                dut_val = parse_uptime(dumpstate_content)
-                            elif metric == "Start reason":
-                                dut_val = parse_start_reasons(dumpstate_content, app_name)
-                            elif metric == "Kill reason":
-                                reasons = parse_kill_reasons(dumpstate_content, app_name)
-                                dut_val = ", ".join(reasons) if reasons else ""
-                            elif metric == "Crash count":
-                                dut_val = count_crashes(dumpstate_content)
-                            elif metric == "Compiler":
-                                dut_val = parse_compiler_type(dumpstate_content, app_name)
+                    extend_data = dut_cycle.get('Precomputed_Extend_Data', {})
+                    if "Uptime" in metric:
+                        dut_val = extend_data.get('Uptime', "")
+                    elif metric == "Start reason":
+                        dut_val = extend_data.get('Start_Reason', "")
+                    elif metric == "Kill reason":
+                        reasons = extend_data.get('Kill_Reason', [])
+                        dut_val = ", ".join(reasons) if reasons else ""
+                    elif metric == "Crash count":
+                        dut_val = extend_data.get('Crash_Count', "")
+                    elif metric == "Compiler":
+                        dut_val = extend_data.get('Compiler', "")
             
             ws.write(row_idx, 1 + i, dut_val, fmt_section_text if isinstance(dut_val, str) else fmt_section_value)
             
-            # Get REF abnormal data
+            # Get REF abnormal data — [REFACTORED] Đọc từ Precomputed_Extend_Data
             ref_val = ""
             if i < len(ref_cycles):
                 ref_cycle = ref_cycles[i]
                 if ref_cycle:
-                    trace_mapping_info = ref_cycle.get('trace_mapping', {})
-                    bugreport_path = trace_mapping_info.get('bugreport_path', '') if trace_mapping_info else ''
-                    if bugreport_path:
-                        dumpstate_content = find_dumpstate_content(bugreport_path)
-                        if dumpstate_content:
-                            if "Uptime" in metric:
-                                ref_val = parse_uptime(dumpstate_content)
-                            elif metric == "Start reason":
-                                ref_val = parse_start_reasons(dumpstate_content, app_name)
-                            elif metric == "Kill reason":
-                                reasons = parse_kill_reasons(dumpstate_content, app_name)
-                                ref_val = ", ".join(reasons) if reasons else ""
-                            elif metric == "Crash count":
-                                ref_val = count_crashes(dumpstate_content)
-                            elif metric == "Compiler":
-                                ref_val = parse_compiler_type(dumpstate_content, app_name)
+                    extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                    if "Uptime" in metric:
+                        ref_val = extend_data.get('Uptime', "")
+                    elif metric == "Start reason":
+                        ref_val = extend_data.get('Start_Reason', "")
+                    elif metric == "Kill reason":
+                        reasons = extend_data.get('Kill_Reason', [])
+                        ref_val = ", ".join(reasons) if reasons else ""
+                    elif metric == "Crash count":
+                        ref_val = extend_data.get('Crash_Count', "")
+                    elif metric == "Compiler":
+                        ref_val = extend_data.get('Compiler', "")
             
             ws.write(row_idx, dut_avg_col + 1 + i, ref_val, fmt_section_text if isinstance(ref_val, str) else fmt_section_value)
         
@@ -2312,13 +2284,35 @@ def export_avg_to_json(
             "onCreate", "OpenCameraRequest", "onResume", "StartPreviewRequest"
         ]
         
+        # [NEW] Định nghĩa lại keys để mask giống hệt Excel
+        COLD_ONLY_KEYS = {
+            "Touch Down ~ Start Proc", "Start Proc", "Start Proc ~ ActivityThreadMain",
+            "Activity Thread Main", "ActivityThreadMain ~ bindApplication",
+            "Bind Application", "bindApplication ~ activityStart"
+        }
+        WARM_ONLY_KEYS = {
+            "Touch Duration", "Touch Up ~ Activity Start"
+        }
+        
         sequence_data = {}
         for metric in sequence_metrics:
             values = []
             for cycle in valid_cycles:
+                # [NEW] Masking Logic: Bỏ qua metric nếu không đúng loại Launch Type
+                # c_type = cycle.get("Launch Type")
+                c_type = "Cold" if launch_type == "entry" else "Warm"
+                if c_type == "Cold" and metric in WARM_ONLY_KEYS:
+                    continue  # Bỏ qua Touch Duration cho cycle Cold
+                if c_type == "Warm" and metric in COLD_ONLY_KEYS:
+                    continue  # Bỏ qua Start Proc... cho cycle Warm
+                
                 val = cycle.get(metric, 0.0)
-                if val and val > 0: values.append(float(val))
-            if values: sequence_data[metric] = round(sum(values) / len(values), 3)
+                if val and val > 0: 
+                    values.append(float(val))
+                    
+            if values: 
+                sequence_data[metric] = round(sum(values) / len(values), 3)
+                
         if sequence_data: result["sequence"] = sequence_data
         
         # ========================
@@ -2356,26 +2350,25 @@ def export_avg_to_json(
             if values: loadapk_data[category] = round(sum(values) / len(values), 3)
         if loadapk_data: extend_data["loadapkassets"] = loadapk_data
         
-        # 2.3 Memory
+        # 2.3 Memory — [REFACTORED] Đọc từ Precomputed_Extend_Data
         if folder_path:
             memory_data = {}
             mem_free_vals, mem_avail_vals, pss_vals, pb_vals = [], [], [], []
             
             for idx, cycle in valid_cycles_with_idx:
-                mem = get_memory_data_for_cycle(folder_path, app_name, idx)
-                if mem:
-                    if mem.get('MemFree', 0) > 0: mem_free_vals.append(mem['MemFree'])
-                    if mem.get('MemAvailable', 0) > 0: mem_avail_vals.append(mem['MemAvailable'])
+                precomp = cycle.get('Precomputed_Extend_Data', {})
                 
-                trace_map = cycle.get('trace_mapping', {})
-                br_path = trace_map.get('bugreport_path', '') if trace_map else ''
-                if br_path:
-                    content = find_dumpstate_content(br_path)
-                    if content:
-                        pss = parse_pss_for_app(content, app_name)
-                        if pss > 0: pss_vals.append(pss)
-                        pb = parse_pageboostd_for_app(content, app_name)
-                        if pb > 0: pb_vals.append(pb)
+                mem_free = precomp.get('MemFree', 0.0)
+                if mem_free > 0: mem_free_vals.append(mem_free)
+                
+                mem_avail = precomp.get('MemAvailable', 0.0)
+                if mem_avail > 0: mem_avail_vals.append(mem_avail)
+                
+                pss = precomp.get('App_PSS', 0.0)
+                if pss > 0: pss_vals.append(pss)
+                
+                pb = precomp.get('Pageboostd', 0.0)
+                if pb > 0: pb_vals.append(pb)
 
             if mem_free_vals: memory_data["MemFree_MB"] = round(sum(mem_free_vals)/len(mem_free_vals), 2)
             if mem_avail_vals: memory_data["MemAvailable_MB"] = round(sum(mem_avail_vals)/len(mem_avail_vals), 2)
@@ -2383,28 +2376,37 @@ def export_avg_to_json(
             if pb_vals: memory_data["Pageboostd_MB"] = round(sum(pb_vals)/len(pb_vals), 2)
             if memory_data: extend_data["memory"] = memory_data
             
-        # 2.4 Abnormal
+        # 2.4 Abnormal — [REFACTORED] Đọc từ Precomputed_Extend_Data
         if folder_path:
             abnormal_info = {}
-            uptime_vals, kill_reasons, crash_counts, compilers = [], [], [], []
+            uptime_vals, start_reasons, kill_reasons, crash_counts, compilers = [], [], [], [], []
             
             for _, cycle in valid_cycles_with_idx:
-                trace_map = cycle.get('trace_mapping', {})
-                br_path = trace_map.get('bugreport_path', '') if trace_map else ''
-                if br_path:
-                    content = find_dumpstate_content(br_path)
-                    if content:
-                        ut = parse_uptime(content)
-                        if ut > 0: uptime_vals.append(ut)
-                        kr = parse_kill_reasons(content, app_name)
-                        if kr: kill_reasons.extend(kr)
-                        cc = count_crashes(content)
-                        if cc > 0: crash_counts.append(cc)
-                        ct = parse_compiler_type(content, app_name)
-                        if ct: compilers.append(ct)
+                precomp = cycle.get('Precomputed_Extend_Data', {})
+                
+                ut = precomp.get('Uptime', 0)
+                if ut and ut > 0: uptime_vals.append(ut)
+                
+                sr = precomp.get('Start_Reason', "")
+                if sr:
+                    # Xử lý an toàn đề phòng hàm parser trả về string hoặc list
+                    if isinstance(sr, list):
+                        start_reasons.extend(sr)
+                    else:
+                        start_reasons.append(sr)
+
+                kr = precomp.get('Kill_Reason', [])
+                if kr: kill_reasons.extend(kr)
+                
+                cc = precomp.get('Crash_Count', 0)
+                if cc and cc > 0: crash_counts.append(cc)
+                
+                ct = precomp.get('Compiler', '')
+                if ct: compilers.append(ct)
 
             if uptime_vals: abnormal_info["uptime_minutes"] = round(sum(uptime_vals)/len(uptime_vals), 2)
-            if kill_reasons: abnormal_info["kill_reasons"] = list(set(kill_reasons))
+            if start_reasons: abnormal_info["start_reasons"] = list((start_reasons))
+            if kill_reasons: abnormal_info["kill_reasons"] = list((kill_reasons))
             if crash_counts: abnormal_info["crash_count_avg"] = round(sum(crash_counts)/len(crash_counts), 1)
             if compilers:
                 from collections import Counter
@@ -2545,70 +2547,170 @@ def export_avg_to_json(
 
 def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], extracted: bool):
     """
-    Xử lý quét Trace với Smart Cache (Target-App Aware & Subset-Aware).
-    Có thể trích xuất data nếu user chỉ yêu cầu một phần của Cache.
+    Xử lý quét Trace với Incremental Smart Cache (Cache Cộng Dồn).
+    Tự động nhận diện App còn thiếu, chỉ quét bù những App đó và gộp vào Cache cũ.
     """
     cache_path = os.path.join(folder_path, ".perf_cache.pkl")
     
-    # Chuẩn hóa target_apps hiện tại
+    # Chuẩn hóa danh sách App user yêu cầu hiện tại (None = ALL APPS)
     current_targets = sorted(target_apps) if target_apps else None
     
+    cached_data = {}
+    cached_targets = []
+    cache_valid = False
+    
+    # 1. ĐỌC CACHE HIỆN TẠI
     if os.path.exists(cache_path):
-        print(f"  -> [{label}] Found cache file: {cache_path}")
         try:
             with open(cache_path, 'rb') as f:
                 cache_content = pickle.load(f)
             
-            if isinstance(cache_content, dict) and "target_apps" in cache_content and "data" in cache_content:
-                cached_targets = cache_content["target_apps"]
-                cached_data = cache_content["data"]
-                
-                # CASE 1: Giống hệt nhau (Khớp 100%)
-                if current_targets == cached_targets and cache_content.get("version") == CACHE_VERSION:
-                    print(f"  -> [{label}] Target apps exactly matched! Loading from cache ...")
-                    return cached_data
-                
-                # CASE 2: Yêu cầu hiện tại là TẬP CON của Cache (Ví dụ: Cache có ALL, user chỉ cần Gallery)
-                elif current_targets is not None and cache_content.get("version") == CACHE_VERSION:
-                    # Nếu Cache lưu ALL (None), hoặc Cache chứa đủ các app đang yêu cầu
-                    if cached_targets is None or set(current_targets).issubset(set(cached_targets)):
-                        print(f"  -> [{label}] Requested apps {current_targets} are available in Cache!")
-                        print(f"  -> [{label}] Extracting subset from cache ...")
-                        
-                        # Trích xuất riêng data của những app được yêu cầu
-                        subset_data = {
-                            app: data for app, data in cached_data.items() 
-                            if app in current_targets
-                        }
-                        return subset_data
-                
-                # CASE 3: Yêu cầu thêm App mới mà Cache chưa có (VD: Cache có Gallery, user đòi thêm Camera)
-                print(f"  -> [{label}] Target apps missing in cache! (Old: {cached_targets}, Requested: {current_targets})")
-                print(f"  -> [{label}] Cache invalidated. Processing from scratch...")
+            # Kiểm tra format và CACHE_VERSION
+            if isinstance(cache_content, dict) and cache_content.get("version") == CACHE_VERSION:
+                cached_targets = cache_content.get("target_apps")
+                cached_data = cache_content.get("data", {})
+                cache_valid = True
+                print(f"  -> [{label}] Found valid cache file (Version {CACHE_VERSION}).")
             else:
-                print(f"  -> [{label}] Old cache format detected. Invalidating...")
-                
+                print(f"  -> [{label}] Cache version mismatch or invalid format. Ignoring old cache...")
         except Exception as e:
             print(f"  -> [{label}] [ERROR] Failed to read cache: {e}. Processing from scratch...")
-            
-    # CHẠY QUÉT TỪ ĐẦU (Nếu không có cache hoặc cache không đủ data)
-    print(f"  -> [{label}] Processing trace files...")
-    results = process_all_traces(folder_path, label, num_workers, target_apps, extracted)
+
+    # 2. XỬ LÝ LOGIC TÌM APP CÒN THIẾU (MISSING APPS)
+    missing_apps = None # Mặc định None là quét tất cả (ALL APPS)
     
-    # LƯU CACHE
+    if cache_valid:
+        if current_targets is None:
+            # TH1: User muốn ALL APPS
+            if cached_targets is None:
+                print(f"  -> [{label}] Cache already contains ALL APPS. Loading (⚡)...")
+                return cached_data
+            else:
+                print(f"  -> [{label}] Requested ALL APPS, but cache only has {cached_targets}.")
+                print(f"  -> [{label}] Must process ALL from scratch...")
+                cached_data = {} # Reset data cũ để tạo cache ALL mới
+                
+        else:
+            # TH2: User muốn danh sách App cụ thể
+            if cached_targets is None:
+                # Cache có ALL APPS, chỉ việc trích xuất tập con
+                print(f"  -> [{label}] Cache contains ALL APPS. Extracting {current_targets} (⚡)...")
+                return {app: data for app, data in cached_data.items() if app in current_targets}
+            else:
+                # Tính danh sách App còn thiếu
+                missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
+                
+                if not missing_apps:
+                    print(f"  -> [{label}] All requested apps {current_targets} are in cache. Extracting (⚡)...")
+                    return {app: data for app, data in cached_data.items() if app in current_targets}
+                else:
+                    print(f"  -> [{label}] Cache is missing apps: {missing_apps}.")
+                    print(f"  -> [{label}] Will process ONLY missing apps and MERGE...")
+    else:
+        # Không có cache hợp lệ
+        missing_apps = current_targets
+
+    # 3. CHẠY QUÉT TRACE (CHỈ CHO NHỮNG APP CÒN THIẾU)
+    print(f"  -> [{label}] Processing trace files for: {missing_apps if missing_apps else 'ALL APPS'}...")
+    new_data = process_all_traces(folder_path, label, num_workers, missing_apps, extracted)
+    
+    # 4. GỘP DỮ LIỆU (MERGE)
+    # Gộp từ điển: Data cũ + Data mới
+    merged_data = {**cached_data, **new_data}
+    
+    # Gộp danh sách target_apps
+    if missing_apps is None or cached_targets is None:
+        merged_targets = None # Đại diện cho ALL APPS
+    else:
+        merged_targets = sorted(list(set(cached_targets) | set(missing_apps)))
+
+    # 5. LƯU LẠI CACHE ĐÃ GỘP
     try:
         cache_content_to_save = {
             "version": CACHE_VERSION,
-            "target_apps": current_targets,
-            "data": results
+            "target_apps": merged_targets,
+            "data": merged_data
         }
         with open(cache_path, 'wb') as f:
             pickle.dump(cache_content_to_save, f)
-        print(f"  -> [{label}] Saved data & app filter to cache: {cache_path}")
+        print(f"  -> [{label}] Saved MERGED data to cache: {cache_path}")
     except Exception as e:
         print(f"  -> [{label}] [WARN] Could not save cache: {e}")
         
-    return results
+    # 6. TRẢ VỀ CHÍNH XÁC NHỮNG GÌ USER YÊU CẦU LẦN NÀY
+    if current_targets is None:
+        return merged_data
+    else:
+        # Lọc lại chỉ lấy data của các app nằm trong current_targets
+        return {app: data for app, data in merged_data.items() if app in current_targets}
+
+
+# def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], extracted: bool):
+#     """
+#     Xử lý quét Trace với Smart Cache (Target-App Aware & Subset-Aware).
+#     Có thể trích xuất data nếu user chỉ yêu cầu một phần của Cache.
+#     """
+#     cache_path = os.path.join(folder_path, ".perf_cache.pkl")
+    
+#     # Chuẩn hóa target_apps hiện tại
+#     current_targets = sorted(target_apps) if target_apps else None
+    
+#     if os.path.exists(cache_path):
+#         print(f"  -> [{label}] Found cache file: {cache_path}")
+#         try:
+#             with open(cache_path, 'rb') as f:
+#                 cache_content = pickle.load(f)
+            
+#             if isinstance(cache_content, dict) and "target_apps" in cache_content and "data" in cache_content:
+#                 cached_targets = cache_content["target_apps"]
+#                 cached_data = cache_content["data"]
+                
+#                 # CASE 1: Giống hệt nhau (Khớp 100%)
+#                 if current_targets == cached_targets and cache_content.get("version") == CACHE_VERSION:
+#                     print(f"  -> [{label}] Target apps exactly matched! Loading from cache ...")
+#                     return cached_data
+                
+#                 # CASE 2: Yêu cầu hiện tại là TẬP CON của Cache (Ví dụ: Cache có ALL, user chỉ cần Gallery)
+#                 elif current_targets is not None and cache_content.get("version") == CACHE_VERSION:
+#                     # Nếu Cache lưu ALL (None), hoặc Cache chứa đủ các app đang yêu cầu
+#                     if cached_targets is None or set(current_targets).issubset(set(cached_targets)):
+#                         print(f"  -> [{label}] Requested apps {current_targets} are available in Cache!")
+#                         print(f"  -> [{label}] Extracting subset from cache ...")
+                        
+#                         # Trích xuất riêng data của những app được yêu cầu
+#                         subset_data = {
+#                             app: data for app, data in cached_data.items() 
+#                             if app in current_targets
+#                         }
+#                         return subset_data
+                
+#                 # CASE 3: Yêu cầu thêm App mới mà Cache chưa có (VD: Cache có Gallery, user đòi thêm Camera)
+#                 print(f"  -> [{label}] Target apps missing in cache! (Old: {cached_targets}, Requested: {current_targets})")
+#                 print(f"  -> [{label}] Cache invalidated. Processing from scratch...")
+#             else:
+#                 print(f"  -> [{label}] Old cache format detected. Invalidating...")
+                
+#         except Exception as e:
+#             print(f"  -> [{label}] [ERROR] Failed to read cache: {e}. Processing from scratch...")
+            
+#     # CHẠY QUÉT TỪ ĐẦU (Nếu không có cache hoặc cache không đủ data)
+#     print(f"  -> [{label}] Processing trace files...")
+#     results = process_all_traces(folder_path, label, num_workers, target_apps, extracted)
+    
+#     # LƯU CACHE
+#     try:
+#         cache_content_to_save = {
+#             "version": CACHE_VERSION,
+#             "target_apps": current_targets,
+#             "data": results
+#         }
+#         with open(cache_path, 'wb') as f:
+#             pickle.dump(cache_content_to_save, f)
+#         print(f"  -> [{label}] Saved data & app filter to cache: {cache_path}")
+#     except Exception as e:
+#         print(f"  -> [{label}] [WARN] Could not save cache: {e}")
+        
+#     return results
 
 
 def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None, extracted: bool = False) -> None:
@@ -2714,3 +2816,52 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Export json v2
+'''
+        # ========================
+        # 1. SEQUENCE METRICS (AVG)
+        # ========================
+        sequence_metrics = [
+            "App Execution Time", "Touch Down ~ Start Proc", "Start Proc",
+            "Start Proc ~ ActivityThreadMain", "Activity Thread Main",
+            "ActivityThreadMain ~ bindApplication", "Bind Application",
+            "bindApplication ~ activityStart", "Touch Duration", "Touch Up ~ Activity Start",
+            "Activity Start", "activityStart ~ activityResume", "Activity Resume",
+            "ActivityResume ~ Choreographer", "Choreographer",
+            "Choreographer ~ ActivityIdle", "ActivityIdle", "ActivityIdle ~ Animating end",
+            "Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
+            "onCreate", "OpenCameraRequest", "onResume", "StartPreviewRequest"
+        ]
+        
+        # [NEW] Định nghĩa lại keys để mask giống hệt Excel
+        COLD_ONLY_KEYS = {
+            "Touch Down ~ Start Proc", "Start Proc", "Start Proc ~ ActivityThreadMain",
+            "Activity Thread Main", "ActivityThreadMain ~ bindApplication",
+            "Bind Application", "bindApplication ~ activityStart"
+        }
+        WARM_ONLY_KEYS = {
+            "Touch Duration", "Touch Up ~ Activity Start"
+        }
+        
+        sequence_data = {}
+        for metric in sequence_metrics:
+            values = []
+            for cycle in valid_cycles:
+                # [NEW] Masking Logic: Bỏ qua metric nếu không đúng loại Launch Type
+                # c_type = cycle.get("Launch Type")
+                c_type = "Cold" if launch_type == "entry" else "Warm"
+                if c_type == "Cold" and metric in WARM_ONLY_KEYS:
+                    continue  # Bỏ qua Touch Duration cho cycle Cold
+                if c_type == "Warm" and metric in COLD_ONLY_KEYS:
+                    continue  # Bỏ qua Start Proc... cho cycle Warm
+                
+                val = cycle.get(metric, 0.0)
+                if val and val > 0: 
+                    values.append(float(val))
+                    
+            if values: 
+                sequence_data[metric] = round(sum(values) / len(values), 3)
+                
+        if sequence_data: result["sequence"] = sequence_data
+'''

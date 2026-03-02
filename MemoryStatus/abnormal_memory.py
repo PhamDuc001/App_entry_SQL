@@ -664,7 +664,7 @@ class DevicePerformanceAnalyzer:
             
             # Process app start/kill data from dumpstate file
             if part_name:
-                print(f"Processing app start/kill data for part: {part_name} from {zip_file.name}")
+                # print(f"Processing app start/kill data for part: {part_name} from {zip_file.name}")
                 
                 # Get all apps for this part
                 target_apps = []
@@ -1549,12 +1549,12 @@ class DevicePerformanceAnalyzer:
         for item in result1.uptime_data:
             if item.extracted_file_path:
                 try:
-                    print(f"Reading DUT dumpstate for RAM detection: {item.extracted_file_path}")
+                    # print(f"Reading DUT dumpstate for RAM detection: {item.extracted_file_path}")
                     with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                     ram_size = get_ram_size(content)
                     dut_threshold = self.config.get_threshold_for_ram(ram_size)
-                    print(f"DUT RAM size: {ram_size}GB, PSS threshold: {dut_threshold}MB")
+                    # print(f"DUT RAM size: {ram_size}GB, PSS threshold: {dut_threshold}MB")
                     break
                 except Exception as e:
                     print(f"Error reading DUT dumpstate file for RAM detection: {e}")
@@ -1564,12 +1564,12 @@ class DevicePerformanceAnalyzer:
         for item in result2.uptime_data:
             if item.extracted_file_path:
                 try:
-                    print(f"Reading REF dumpstate for RAM detection: {item.extracted_file_path}")
+                    # print(f"Reading REF dumpstate for RAM detection: {item.extracted_file_path}")
                     with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                     ram_size = get_ram_size(content)
                     ref_threshold = self.config.get_threshold_for_ram(ram_size)
-                    print(f"REF RAM size: {ram_size}GB, PSS threshold: {ref_threshold}MB")
+                    # print(f"REF RAM size: {ram_size}GB, PSS threshold: {ref_threshold}MB")
                     break
                 except Exception as e:
                     print(f"Error reading REF dumpstate file for RAM detection: {e}")
@@ -1583,7 +1583,7 @@ class DevicePerformanceAnalyzer:
         for item in result1.uptime_data:
             if item.extracted_file_path:
                 try:
-                    print(f"Reading DUT dumpstate for PSS: {item.extracted_file_path}")
+                    # print(f"Reading DUT dumpstate for PSS: {item.extracted_file_path}")
                     with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                     
@@ -1616,7 +1616,7 @@ class DevicePerformanceAnalyzer:
                                     # Since PSS data is sorted from big to small, we can break early
                                     break
                         
-                        print(f"  Found {process_count} processes above threshold for {item.filename}")
+                        # print(f"  Found {process_count} processes above threshold for {item.filename}")
                     else:
                         print(f"  PSS section not found in {item.filename}")
                 except Exception as e:
@@ -1627,7 +1627,7 @@ class DevicePerformanceAnalyzer:
         for item in result2.uptime_data:
             if item.extracted_file_path:
                 try:
-                    print(f"Reading REF dumpstate for PSS: {item.extracted_file_path}")
+                    # print(f"Reading REF dumpstate for PSS: {item.extracted_file_path}")
                     with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                     
@@ -1660,7 +1660,7 @@ class DevicePerformanceAnalyzer:
                                     # Since PSS data is sorted from big to small, we can break early
                                     break
                         
-                        print(f"  Found {process_count} processes above threshold for {item.filename}")
+                        # print(f"  Found {process_count} processes above threshold for {item.filename}")
                     else:
                         print(f"  PSS section not found in {item.filename}")
                 except Exception as e:
@@ -1714,14 +1714,14 @@ class DevicePerformanceAnalyzer:
             part_name = item.part_name
             if part_name and item.extracted_file_path:
                 dut_part_data[part_name].append(item)
-                print(f"DUT: Found item for part {part_name}: {item.filename} -> {item.extracted_file_path}")
+                # print(f"DUT: Found item for part {part_name}: {item.filename} -> {item.extracted_file_path}")
         
         # Group REF data by part name
         for item in result2.uptime_data:
             part_name = item.part_name
             if part_name and item.extracted_file_path:
                 ref_part_data[part_name].append(item)
-                print(f"REF: Found item for part {part_name}: {item.filename} -> {item.extracted_file_path}")
+                # print(f"REF: Found item for part {part_name}: {item.filename} -> {item.extracted_file_path}")
         
         print(f"DUT parts: {list(dut_part_data.keys())}")
         print(f"REF parts: {list(ref_part_data.keys())}")
@@ -1781,13 +1781,13 @@ class DevicePerformanceAnalyzer:
                 for dut_item in dut_items:
                     if dut_item.extracted_file_path:
                         try:
-                            print(f"Reading DUT dumpstate: {dut_item.extracted_file_path}")
+                            # print(f"Reading DUT dumpstate: {dut_item.extracted_file_path}")
                             with open(dut_item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
                                 dut_content = f.read()
                             dut_pss = extract_pss_for_package(dut_content, target_package)
                             if dut_pss > 0:
                                 dut_pss_values.append(dut_pss)
-                                print(f"  DUT PSS for {target_app}: {dut_pss}MB")
+                                # print(f"  DUT PSS for {target_app}: {dut_pss}MB")
                             else:
                                 print(f"  DUT PSS for {target_app}: 0MB (not found)")
                         except Exception as e:
@@ -1797,13 +1797,13 @@ class DevicePerformanceAnalyzer:
                 for ref_item in ref_items:
                     if ref_item.extracted_file_path:
                         try:
-                            print(f"Reading REF dumpstate: {ref_item.extracted_file_path}")
+                            # print(f"Reading REF dumpstate: {ref_item.extracted_file_path}")
                             with open(ref_item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
                                 ref_content = f.read()
                             ref_pss = extract_pss_for_package(ref_content, target_package)
                             if ref_pss > 0:
                                 ref_pss_values.append(ref_pss)
-                                print(f"  REF PSS for {target_app}: {ref_pss}MB")
+                                # print(f"  REF PSS for {target_app}: {ref_pss}MB")
                             else:
                                 print(f"  REF PSS for {target_app}: 0MB (not found)")
                         except Exception as e:
