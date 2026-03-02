@@ -79,9 +79,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -2416,19 +2416,46 @@ def export_avg_to_json(
         if extend_data: result["extend"] = extend_data
 
         # =========================================================
-        # 3. TOP CPU (BY CYCLE) - [REMOVED]
+        # 3. TOP CPU BY PROCESS (BY CYCLE) - TOP 5
         # =========================================================
-        # Bỏ theo yêu cầu - không cần top_cpu_by_cycle
+        cpu_cycles_data = []
+        for idx, cycle in valid_cycles_with_idx:
+            # Lấy data CPU process, sort giảm dần theo dur_ms, và cắt lấy Top 5
+            procs = sorted(cycle.get("CPU_Process_Data", []), key=lambda x: x.get('dur_ms', 0), reverse=True)[:5]
+            
+            proc_list = []
+            for p in procs:
+                s_name = p.get('sql_name', 'Unknown')
+                d_name = p.get('dumpstate_name')
+                # Format tên: Ưu tiên dùng tên dumpstate nếu tên sql chỉ là PID ảo (PID-xxx)
+                name = d_name if (s_name.startswith("PID-") and d_name) else s_name
+                
+                proc_list.append({
+                    "name": name, 
+                    "val": round(p.get('dur_ms', 0), 2)  # Làm tròn 2 chữ số cho JSON gọn gàng
+                })
+            
+            # Append vào list nếu cycle này có data
+            if proc_list:
+                cpu_cycles_data.append({
+                    "cycle": idx + 1, 
+                    "process": proc_list
+                })
+                
+        if cpu_cycles_data: 
+            result["top_cpu_by_cycle"] = cpu_cycles_data
 
         # =========================================================
-        # 4. PRIORITY STATICS (BY CYCLE)
+        # 4. PRIORITY STATICS (BY CYCLE) - [REFACTORED]
         # =========================================================
         priority_cycles_data = []
+        frequency_cycles_data = []
         prio_categories = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
         
         for idx, cycle in valid_cycles_with_idx:
             prio_data = cycle.get("Priority_Data", {})
-            cycle_result = {}
+            prio_cycle_result = {}
+            freq_cycle_result = {}
             has_data = False
             
             for cat in prio_categories:
@@ -2448,14 +2475,38 @@ def export_avg_to_json(
                                 if len(parts) >= 2 and parts[1] != "0":
                                     freq_acc[parts[1]] += val_ms
 
-                        prio_pct = {k: round((v/total_dur)*100, 2) for k, v in prio_acc.items()}
-                        freq_pct = {k: round((v/total_dur)*100, 2) for k, v in freq_acc.items()}
+                        # Priority data: Convert dict to list of objects, filter out 0.0%
+                        prio_list = []
+                        for prio_id, pct in prio_acc.items():
+                            percentage = round((pct/total_dur)*100, 2)
+                            if percentage > 0:
+                                prio_list.append({
+                                    "priority": int(prio_id),
+                                    "percentage": percentage
+                                })
+                        if prio_list:
+                            prio_cycle_result[cat] = prio_list
+                            has_data = True
                         
-                        cycle_result[cat] = {"priority": prio_pct, "frequency": freq_pct}
-                        has_data = True
+                        # Frequency data: Convert dict to list of objects, filter out 0.0%
+                        freq_list = []
+                        for freq_id, pct in freq_acc.items():
+                            percentage = round((pct/total_dur)*100, 2)
+                            if percentage > 0:
+                                freq_list.append({
+                                    "frequency": int(freq_id),
+                                    "percentage": percentage
+                                })
+                        if freq_list:
+                            freq_cycle_result[cat] = freq_list
+                            has_data = True
             
-            if has_data: priority_cycles_data.append({"cycle": idx + 1, "data": cycle_result})
+            if has_data:
+                priority_cycles_data.append({"cycle": idx + 1, "data": prio_cycle_result})
+                frequency_cycles_data.append({"cycle": idx + 1, "data": freq_cycle_result})
+        
         if priority_cycles_data: result["priority_by_cycle"] = priority_cycles_data
+        if frequency_cycles_data: result["frequency_by_cycle"] = frequency_cycles_data
 
         # 5. BLOCK I/O
         bio_cycles = []
