@@ -79,9 +79,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -221,11 +221,6 @@ def group_traces_by_app(trace_files: List[str], target_apps: List[str] = None) -
 # ---------------------------------------------------------------------------
 # Batch Processing Logic với Multiprocessing
 # ---------------------------------------------------------------------------
-
-# Global variable để lưu bugreport mappings cho multiprocessing
-_BUGREPORT_MAPPINGS = {}
-_ALL_FILES_SORTED = []
-
 
 def _process_single_trace_worker(args):
     # Unpack thêm folder_path (cần truyền vào từ process_all_traces)
@@ -2249,10 +2244,9 @@ def export_avg_to_json(
     [UPDATED v2]
     - Tách thành nhiều file JSON theo từng app (app_name_dut.json, app_name_ref.json)
     - Chỉ lấy entry data, bỏ reentry
-    - Bỏ top_cpu_by_cycle data (process + thread)
     """
     
-    def calculate_metrics_for_app(cycles: List[Dict[str, Any]], app_name: str, launch_type: str, folder_path: str = "") -> Dict[str, Any]:
+    def calculate_metrics_for_app(cycles: List[Dict[str, Any]], app_name: str, launch_type: str, folder_path: str = "", compare_cycles: List[Dict[str, Any]] = None, is_dut: bool = True) -> Dict[str, Any]:
         """Tính toán metrics cho một app/launch_type"""
         if not cycles: return {}
         
@@ -2416,34 +2410,86 @@ def export_avg_to_json(
         if extend_data: result["extend"] = extend_data
 
         # =========================================================
-        # 3. TOP CPU BY PROCESS (BY CYCLE) - TOP 5
+        # 3. TOP CPU BY PROCESS DIFF (TOP 5)
         # =========================================================
         cpu_cycles_data = []
         for idx, cycle in valid_cycles_with_idx:
-            # Lấy data CPU process, sort giảm dần theo dur_ms, và cắt lấy Top 5
-            procs = sorted(cycle.get("CPU_Process_Data", []), key=lambda x: x.get('dur_ms', 0), reverse=True)[:5]
+            c_main = cycle
+            c_comp = compare_cycles[idx] if compare_cycles and idx < len(compare_cycles) else None
             
-            proc_list = []
-            for p in procs:
-                s_name = p.get('sql_name', 'Unknown')
-                d_name = p.get('dumpstate_name')
-                # Format tên: Ưu tiên dùng tên dumpstate nếu tên sql chỉ là PID ảo (PID-xxx)
-                name = d_name if (s_name.startswith("PID-") and d_name) else s_name
+            # Phân biệt đâu là DUT, đâu là REF để tính Diff = DUT - REF
+            dut_cycle = c_main if is_dut else c_comp
+            ref_cycle = c_comp if is_dut else c_main
+            
+            dut_p = dut_cycle.get("CPU_Process_Data", []) if dut_cycle else []
+            ref_p = ref_cycle.get("CPU_Process_Data", []) if ref_cycle else []
+            
+            # 1. Build lookup maps cho REF
+            ref_by_sql = {}
+            ref_by_dump = {}
+            for item in ref_p:
+                s_name = item.get('sql_name', '')
+                d_name = item.get('dumpstate_name')
+                if s_name:
+                    if s_name not in ref_by_sql: ref_by_sql[s_name] = item.copy()
+                    else: ref_by_sql[s_name]['dur_ms'] += item.get('dur_ms', 0)
+                if d_name:
+                    if d_name not in ref_by_dump: ref_by_dump[d_name] = item.copy()
+                    else: ref_by_dump[d_name]['dur_ms'] += item.get('dur_ms', 0)
+            
+            matched_results = []
+            
+            # 2. Duyệt qua DUT để match và tính Diff
+            for dut_item in dut_p:
+                dut_sql = dut_item.get('sql_name', '')
+                dut_dump = dut_item.get('dumpstate_name')
+                dut_val = dut_item.get('dur_ms', 0)
                 
-                proc_list.append({
-                    "name": name, 
-                    "val": round(p.get('dur_ms', 0), 2)  # Làm tròn 2 chữ số cho JSON gọn gàng
+                ref_val = 0.0
+                display_name = dut_sql
+                match_found = False
+                
+                # Logic ghép cặp (Tiered Matching) giống Excel
+                if not dut_sql.startswith("PID-") and dut_sql in ref_by_sql:
+                    ref_val = ref_by_sql[dut_sql]['dur_ms']
+                    match_found = True
+                elif dut_dump and dut_dump in ref_by_dump:
+                    ref_val = ref_by_dump[dut_dump]['dur_ms']
+                    match_found = True
+                    display_name = dut_dump
+                else:
+                    if dut_sql.startswith("PID-") and dut_dump:
+                        display_name = dut_dump
+                
+                # Tính Diff = DUT - REF
+                if match_found:
+                    diff = dut_val - ref_val
+                else:
+                    if dut_dump:
+                        ref_val = 0.0
+                        diff = dut_val
+                    else:
+                        ref_val = 0.0
+                        diff = 0.0 # Bỏ qua process rác không có dumpstate
+                
+                matched_results.append({
+                    "name": display_name,
+                    # "dut": round(dut_val, 2),
+                    # "ref": round(ref_val, 2),
+                    "diff": round(diff, 2)
                 })
+                
+            # 3. Sort theo Diff giảm dần và lấy Top 5
+            top_5 = sorted(matched_results, key=lambda x: x['diff'], reverse=True)[:5]
             
-            # Append vào list nếu cycle này có data
-            if proc_list:
+            if top_5:
                 cpu_cycles_data.append({
-                    "cycle": idx + 1, 
-                    "process": proc_list
+                    "cycle": idx + 1,
+                    "process": top_5
                 })
                 
-        if cpu_cycles_data: 
-            result["top_cpu_by_cycle"] = cpu_cycles_data
+        if cpu_cycles_data:
+            result["top_process_consume_by_cycle"] = cpu_cycles_data
 
         # =========================================================
         # 4. PRIORITY STATICS (BY CYCLE) - [REFACTORED]
@@ -2550,8 +2596,14 @@ def export_avg_to_json(
         # DUT - Chỉ lấy entry
         # =====================
         dut_entry_cycles = dut_results.get(app_name, {}).get("entry", [])
+        ref_entry_cycles = ref_results.get(app_name, {}).get("entry", []) # Lấy sẵn ref cycles
+        
         if dut_entry_cycles:
-            dut_metrics = calculate_metrics_for_app(dut_entry_cycles, app_name, "entry", dut_folder_path)
+            # [CẬP NHẬT 2] Truyền compare_cycles=ref_entry_cycles và is_dut=True
+            dut_metrics = calculate_metrics_for_app(
+                dut_entry_cycles, app_name, "entry", dut_folder_path, 
+                compare_cycles=ref_entry_cycles, is_dut=True
+            )
             if dut_metrics:
                 # Flatten structure: device_code, timestamp, type, app, entry
                 dut_json = {
@@ -2571,9 +2623,12 @@ def export_avg_to_json(
         # =====================
         # REF - Chỉ lấy entry
         # =====================
-        ref_entry_cycles = ref_results.get(app_name, {}).get("entry", [])
         if ref_entry_cycles:
-            ref_metrics = calculate_metrics_for_app(ref_entry_cycles, app_name, "entry", ref_folder_path)
+            # [CẬP NHẬT 2] Truyền compare_cycles=dut_entry_cycles và is_dut=False
+            ref_metrics = calculate_metrics_for_app(
+                ref_entry_cycles, app_name, "entry", ref_folder_path, 
+                compare_cycles=dut_entry_cycles, is_dut=False
+            )
             if ref_metrics:
                 # Flatten structure
                 ref_json = {
