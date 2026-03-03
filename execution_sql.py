@@ -2689,7 +2689,7 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
         if current_targets is None:
             # TH1: User muốn ALL APPS
             if cached_targets is None:
-                print(f"  -> [{label}] Cache already contains ALL APPS. Loading (⚡)...")
+                print(f"  -> [{label}] Cache already contains ALL APPS. Loading ...")
                 return cached_data
             else:
                 print(f"  -> [{label}] Requested ALL APPS, but cache only has {cached_targets}.")
@@ -2700,14 +2700,14 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
             # TH2: User muốn danh sách App cụ thể
             if cached_targets is None:
                 # Cache có ALL APPS, chỉ việc trích xuất tập con
-                print(f"  -> [{label}] Cache contains ALL APPS. Extracting {current_targets} (⚡)...")
+                print(f"  -> [{label}] Cache contains ALL APPS. Extracting {current_targets} ...")
                 return {app: data for app, data in cached_data.items() if app in current_targets}
             else:
                 # Tính danh sách App còn thiếu
                 missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
                 
                 if not missing_apps:
-                    print(f"  -> [{label}] All requested apps {current_targets} are in cache. Extracting (⚡)...")
+                    print(f"  -> [{label}] All requested apps {current_targets} are in cache. Extracting ...")
                     return {app: data for app, data in cached_data.items() if app in current_targets}
                 else:
                     print(f"  -> [{label}] Cache is missing apps: {missing_apps}.")
