@@ -147,52 +147,52 @@ def find_and_extract_pss_data(dut_directory, ref_directory, pss_output_file):
     # Determine RAM sizes and thresholds for DUT and REF
     dut_threshold = 350  # Default threshold
     ref_threshold = 350  # Default threshold
-    
     # Get the first dumpstate file for DUT to determine RAM size
     if dut_directory and os.path.exists(dut_directory):
-        dut_ram_detected = False
-        for dirpath, dirnames, filenames in os.walk(dut_directory):
-            if dut_ram_detected:
-                break
-            for filename in filenames:
-                if filename.startswith('dumpstate-') and filename.endswith('.txt'):
-                    dumpstate_file_path = os.path.join(dirpath, filename)
-                    try:
-                        with open(dumpstate_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read()
-                        ram_size = get_ram_size(content)
-                        dut_threshold = get_threshold_for_ram(ram_size)
-                        print(f"DUT RAM size: {ram_size}GB, PSS threshold: {dut_threshold}MB")
-                        dut_ram_detected = True
+                dut_ram_detected = False
+                for dirpath, dirnames, filenames in os.walk(dut_directory):
+                    if dut_ram_detected:
                         break
-                    except Exception as e:
-                        print(f"Error reading DUT dumpstate file for RAM detection: {e}")
-                        break
-            if dut_ram_detected:
-                break
+                    for filename in filenames:
+                        if filename.startswith('dumpstate-') and filename.endswith('.txt'):
+                            dumpstate_file_path = os.path.join(dirpath, filename)
+                            try:
+                                with open(dumpstate_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    content = f.read()
+                                ram_size = get_ram_size(content)
+                                dut_threshold = get_threshold_for_ram(ram_size)
+                                # print(f"DUT RAM size: {ram_size}GB, PSS threshold: {dut_threshold}MB")  # COMMENTED: Reduce log noise
+                                dut_ram_detected = True
+                                break
+                            except Exception as e:
+                                print(f"Error reading DUT dumpstate file for RAM detection: {e}")
+                                break
+                    if dut_ram_detected:
+                        break       
     
     # Get the first dumpstate file for REF to determine RAM size
     if ref_directory and os.path.exists(ref_directory):
-        ref_ram_detected = False
-        for dirpath, dirnames, filenames in os.walk(ref_directory):
-            if ref_ram_detected:
-                break
-            for filename in filenames:
-                if filename.startswith('dumpstate-') and filename.endswith('.txt'):
-                    dumpstate_file_path = os.path.join(dirpath, filename)
-                    try:
-                        with open(dumpstate_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read()
-                        ram_size = get_ram_size(content)
-                        ref_threshold = get_threshold_for_ram(ram_size)
-                        print(f"REF RAM size: {ram_size}GB, PSS threshold: {ref_threshold}MB")
-                        ref_ram_detected = True
+                ref_ram_detected = False
+                for dirpath, dirnames, filenames in os.walk(ref_directory):
+                    if ref_ram_detected:
                         break
-                    except Exception as e:
-                        print(f"Error reading REF dumpstate file for RAM detection: {e}")
-                        break
-            if ref_ram_detected:
-                break
+                    for filename in filenames:
+                        if filename.startswith('dumpstate-') and filename.endswith('.txt'):
+                            dumpstate_file_path = os.path.join(dirpath, filename)
+                            try:
+                                with open(dumpstate_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    content = f.read()
+                                ram_size = get_ram_size(content)
+                                ref_threshold = get_threshold_for_ram(ram_size)
+                                # print(f"REF RAM size: {ram_size}GB, PSS threshold: {ref_threshold}MB")  # COMMENTED: Reduce log noise
+                                ref_ram_detected = True
+                                break
+                            except Exception as e:
+                                print(f"Error reading REF dumpstate file for RAM detection: {e}")
+                                break
+                    if ref_ram_detected:
+                        break       
+            
     
     # Process both DUT and REF directories
     for root_directory, prefix, threshold in [(dut_directory, "DUT", dut_threshold), (ref_directory, "REF", ref_threshold)]:
@@ -207,7 +207,7 @@ def find_and_extract_pss_data(dut_directory, ref_directory, pss_output_file):
                     dumpstate_file_path = os.path.join(dirpath, filename)
                     folder_name = os.path.basename(dirpath)  # Get the bugreport folder name
                     
-                    print(f"Processing: {dumpstate_file_path}")
+                    # print(f"Processing: {dumpstate_file_path}")  # COMMENTED: Reduce log noise
                     
                     # Extract PSS data above threshold
                     folder_name, high_pss_processes = extract_pss_above_threshold(dumpstate_file_path, threshold)
@@ -223,7 +223,7 @@ def find_and_extract_pss_data(dut_directory, ref_directory, pss_output_file):
         excel_output_file += '.xlsx'
     create_pss_excel_report(all_pss_data_threshold, excel_output_file)
     
-    print(f"\nTotal {len(all_pss_data_threshold)} bugreport folders with processes above their respective thresholds")
+    # print(f"\nTotal {len(all_pss_data_threshold)} bugreport folders with processes above their respective thresholds")  # COMMENTED: Reduce log noise
     print(f"Results written to {excel_output_file}")
 
 def analyze_pss_in_dumpstate_file(dumpstate_file_path, threshold=350):

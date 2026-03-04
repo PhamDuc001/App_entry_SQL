@@ -2,11 +2,56 @@ import os
 import re
 import sys
 import zipfile
-import shutil  # <--- Thêm dòng này
+import shutil
 from collections import defaultdict, OrderedDict
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
+from functools import lru_cache
+
+# ============================================================
+# OPTIMIZATION: Pre-compile regex patterns at module level
+# ============================================================
+PAGEBOOSTD_PATTERN = re.compile(r"app\s+(\S+)\s+data_amount\s+(\d+)")
+
+# ============================================================
+# OPTIMIZATION: Cache for parsed pageboostd data
+# ============================================================
+_pageboostd_cache = {}
+
+def clear_pageboostd_cache():
+    """Clear the pageboostd cache"""
+    global _pageboostd_cache
+    _pageboostd_cache.clear()
+
+def parse_pageboostd_cached(file_path):
+    """
+    Parse pageboostd file with caching.
+    Returns dict with {app: value}
+    """
+    # Check cache first
+    if file_path in _pageboostd_cache:
+        return _pageboostd_cache[file_path]
+    
+    results = {}
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                m = PAGEBOOSTD_PATTERN.search(line)
+                if m:
+                    app = m.group(1)
+                    val = int(m.group(2))
+                    results[app] = val
+    except Exception as e:
+        print(f"[WARN] Cannot parse pageboostd file {file_path}: {e}")
+    
+    # Cache the result
+    _pageboostd_cache[file_path] = results
+    return results
+
+def parse_pageboostd(file_path):
+    """Backward-compatible wrapper for cached version"""
+    return parse_pageboostd_cached(file_path)
 
 
 APP_MAPPING = {
@@ -29,37 +74,52 @@ APP_MAPPING = {
 }
 
 
-def extract_largest_file_from_zip(zip_path, extract_dir):
-    """Decompress and return biggest file .txt"""
-    with zipfile.ZipFile(zip_path, 'r') as z:
-        infos = z.infolist()
-        if not infos:
-            return None
-        largest = max(infos, key=lambda x: x.file_size)
-        out_path = os.path.join(extract_dir, largest.filename.replace("/", "_"))
-        with open(out_path, "wb") as f:
-            f.write(z.read(largest))
-        return out_path
-
-
-def parse_pageboostd(file_path):
-    results = {}
-    pattern = re.compile(r"app\s+(\S+)\s+data_amount\s+(\d+)")
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            m = pattern.search(line)
-            if m:
-                app = m.group(1)
-                val = int(m.group(2))
-                results[app] = val
-    return results
+def parse_pageboostd_from_zip(zip_path):
+    """
+    OPTIMIZATION: Stream ZIP content directly without extracting to disk.
+    Returns parsed pageboostd data {app: value}
+    """
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            infos = z.infolist()
+            if not infos:
+                return {}
+            
+            # Find largest .txt file
+            largest = None
+            max_size = 0
+            for info in infos:
+                if not info.is_dir() and info.filename.lower().endswith('.txt'):
+                    if info.file_size > max_size:
+                        max_size = info.file_size
+                        largest = info
+            
+            if not largest:
+                return {}
+            
+            # Read and parse directly from ZIP
+            with z.open(largest) as f:
+                content = f.read().decode('utf-8', errors='ignore')
+                results = {}
+                for line in content.split('\n'):
+                    m = PAGEBOOSTD_PATTERN.search(line)
+                    if m:
+                        app = m.group(1)
+                        val = int(m.group(2))
+                        results[app] = val
+                return results
+                
+    except Exception as e:
+        print(f"[WARN] Cannot parse ZIP {zip_path}: {e}")
+        return {}
 
 
 def collect_cycles_from_zips(folder):
-    # Collect cycles by extracting from all zip files
+    """
+    OPTIMIZATION: Collect cycles by parsing ZIP files directly without extraction.
+    """
     cycles = []  # list[dict], mỗi dict: {app: value}
-    os.makedirs(os.path.join(folder, "_tmp"), exist_ok=True)
-
+    
     for fname in sorted(os.listdir(folder)):
         if not fname.lower().endswith(".zip"):
             continue
@@ -67,11 +127,8 @@ def collect_cycles_from_zips(folder):
         if not os.path.isfile(fpath):
             continue
 
-        # extract & parse
-        dump_path = extract_largest_file_from_zip(fpath, os.path.join(folder, "_tmp"))
-        if not dump_path:
-            continue
-        data = parse_pageboostd(dump_path)
+        # OPTIMIZATION: Parse directly from ZIP without extraction
+        data = parse_pageboostd_from_zip(fpath)
 
         for app, val in data.items():
             placed = False
@@ -238,6 +295,8 @@ def write_excel(out_path, prefix1, prefix2, cycles1, cycles2):
 
 
 def diff_pageboostd(folder1, folder2, extracted=False):
+    # print("[OPTIMIZATION] Pageboostd mode - streaming ZIP content, no disk extraction")  # COMMENTED: Reduce log noise
+    
     prefix1 = get_prefix(folder1)
     prefix2 = get_prefix(folder2)
 
@@ -251,18 +310,8 @@ def diff_pageboostd(folder1, folder2, extracted=False):
     out_path = os.path.join(folder1, f"ComparePageboostd_{prefix1}_{prefix2}.xlsx")
     write_excel(out_path, prefix1, prefix2, cycles1, cycles2)
     print(f"Excel created: {out_path}")
-
-    # --- ĐOẠN CODE MỚI THÊM VÀO ---
-    # Xóa folder _tmp và toàn bộ nội dung bên trong
-    for folder in [folder1, folder2]:
-        tmp_path = os.path.join(folder, "_tmp")
-        if os.path.exists(tmp_path):
-            try:
-                shutil.rmtree(tmp_path)
-                print(f"Cleaned up temporary folder: {tmp_path}")
-            except OSError as e:
-                print(f"Error removing {tmp_path}: {e}")
-    # ------------------------------
+    
+    # OPTIMIZATION: No longer needs cleanup since we don't extract to disk
 
 
 

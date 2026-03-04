@@ -5,55 +5,85 @@ from collections import defaultdict, OrderedDict
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment, PatternFill
+from multiprocessing import Pool, cpu_count
+from functools import lru_cache
+
+# ============================================================
+# OPTIMIZATION: Pre-compile regex patterns at module level
+# ============================================================
+MEMINFO_PATTERN = re.compile(r'^\s*([^\s:]+)\s*:?\s*([+-]?\d+)(?:\s*kB)?\s*.*$')
+
+# ============================================================
+# OPTIMIZATION: Cache for parsed memory files
+# ============================================================
+_mem_file_cache = {}
+
+def clear_mem_file_cache():
+    """Clear the memory file cache"""
+    global _mem_file_cache
+    _mem_file_cache.clear()
+
+@lru_cache(maxsize=1024)
+def parse_mem_file_cached(file_path, get_first_value=True):
+    """
+    Parse memory file with caching.
+    Returns OrderedDict with parsed key-value pairs.
+    """
+    # Check cache first
+    cache_key = (file_path, get_first_value)
+    if cache_key in _mem_file_cache:
+        return _mem_file_cache[cache_key]
+    
+    data = OrderedDict()
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # OPTIMIZATION: Use pre-compiled regex
+                m = MEMINFO_PATTERN.match(line)
+                if not m:
+                    continue
+                key = m.group(1).rstrip(':')
+                try:
+                    val = int(m.group(2))
+                    # convert kB to MB
+                    if 'kB' in line:
+                        val /= 1000.0  # convert to MB
+                except ValueError:
+                    continue
+                
+                if get_first_value:
+                    # keep first occurrence in file if duplicated
+                    if key not in data:
+                        data[key] = val  # get first value
+                        # OPTIMIZATION: Early termination if both MemFree and MemAvailable found
+                        if 'MemFree' in data and 'MemAvailable' in data:
+                            break
+                else:
+                    # keep last occurrence (re-entry value)
+                    data[key] = val  # get re-entry value
+                    
+    except Exception as e:
+        # skip unreadable files but print notice
+        print(f"[WARN] cannot read file {file_path}: {e}")
+    
+    # Cache the result
+    _mem_file_cache[cache_key] = data
+    return data
 
 def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
     
-    # INT_RE = re.compile(r'^\s*([^\s:]+)\s*:?\s*([+-]?\d+)\b')
-    #keys_to_check = ["MemTotal", "MemFree"]
-    
+    # Use cached version
     def parse_mem_file(file_path, get_first_value=True):
-        data = OrderedDict()
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    # Regex to capture key and value, with optional kB unit
-                    pattern = r'^\s*([^\s:]+)\s*:?\s*([+-]?\d+)(?:\s*kB)?\s*.*$'
-
-                    m = re.match(pattern, line)
-                    if not m:
-                        continue
-                    key = m.group(1).rstrip(':')
-                    try:
-                        val = int(m.group(2))
-                        # convert kB to MB
-                        if 'kB' in line:
-                            val /= 1000.0  # convert to MB
-                    except ValueError:
-                        continue
-                    
-                    if get_first_value:
-                        # keep first occurrence in file if duplicated
-                        if key not in data:
-                            data[key] = val  # get first value
-                    else:
-                        # keep last occurrence (re-entry value)
-                        data[key] = val  # get re-entry value
-                        
-        except Exception as e:
-            # skip unreadable files but print notice
-            print(f"[WARN] cannot read file {file_path}: {e}")
-        return data
-
+        return parse_mem_file_cached(file_path, get_first_value)
+    
     def collect_folder_data(folder_path, file_pattern, get_first_value=True):
         app_files = defaultdict(list)
         for fname in sorted(os.listdir(folder_path)):
-        # for fname in os.listdir(folder_path):
-
-            #if file_pattern not in fname:
+            # OPTIMIZATION: Pre-compile regex pattern matching
             if not re.search(file_pattern, fname, re.IGNORECASE):
                 continue
             fpath = os.path.join(folder_path, fname)
@@ -75,7 +105,7 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
             values = dict()  # key -> list
 
             for idx, p in enumerate(paths):
-                parsed = parse_mem_file(p, get_first_value)  # OrderedDict
+                parsed = parse_mem_file(p, get_first_value)  # OrderedDict (cached)
                 # if new key appears in this file, create and pad with None for prior files
                 for k in parsed.keys():
                     if k not in all_keys:
@@ -100,16 +130,7 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
             }
 
         return results
-
     
-
-    # def get_prefix_from_folder(folder_path):
-    #     for fname in sorted(os.listdir(folder_path)):
-    #         #if "_Start_" in fname:
-    #         if re.search("_start_", fname, re.IGNORECASE):
-    #             return fname.split("_")[0]
-    #     return "UNKNOWN"
-
     def get_prefix_from_folder(folder_path):
         for fname in sorted(os.listdir(folder_path)):
             if re.search("_start_", fname, re.IGNORECASE):
@@ -126,7 +147,7 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
                     else:
                         return prefix_part
         return "UNKNOWN"
-
+    
     def _format_number_for_cell(v):
         if v is None:
             return None
@@ -312,9 +333,53 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
         except Exception:
             pass
 
-    def create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=True, selected_keys = None):
-        data1 = collect_folder_data(folder1, r"_start_", get_first_value)
-        data2 = collect_folder_data(folder2, r"_start_", get_first_value)
+    # ============================================================
+    # OPTIMIZATION: Collect data once and reuse for all 4 Excel files
+    # ============================================================
+    def collect_all_data_once(folder1, folder2):
+        """Collect all data (start/end, first/re-entry) in one pass"""
+    # print("[OPTIMIZATION] Collecting all data in one pass...")  # COMMENTED: Reduce log noise
+        data1_start_first = collect_folder_data(folder1, r"_start_", True)
+        data1_end_first = collect_folder_data(folder1, r"_end_", True)
+        data1_start_reentry = collect_folder_data(folder1, r"_start_", False)
+        data1_end_reentry = collect_folder_data(folder1, r"_end_", False)
+        
+        data2_start_first = collect_folder_data(folder2, r"_start_", True)
+        data2_end_first = collect_folder_data(folder2, r"_end_", True)
+        data2_start_reentry = collect_folder_data(folder2, r"_start_", False)
+        data2_end_reentry = collect_folder_data(folder2, r"_end_", False)
+        
+        return {
+            'folder1': {
+                'start_first': data1_start_first,
+                'end_first': data1_end_first,
+                'start_reentry': data1_start_reentry,
+                'end_reentry': data1_end_reentry
+            },
+            'folder2': {
+                'start_first': data2_start_first,
+                'end_first': data2_end_first,
+                'start_reentry': data2_start_reentry,
+                'end_reentry': data2_end_reentry
+            }
+        }
+
+    def create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=True, selected_keys = None, precollected_data=None):
+        """
+        Create Excel file with optional pre-collected data for optimization.
+        """
+        if precollected_data:
+            # Use pre-collected data
+            if get_first_value:
+                data1 = precollected_data['folder1']['start_first']
+                data2 = precollected_data['folder2']['start_first']
+            else:
+                data1 = precollected_data['folder1']['start_reentry']
+                data2 = precollected_data['folder2']['start_reentry']
+        else:
+            # Fallback to original behavior
+            data1 = collect_folder_data(folder1, r"_start_", get_first_value)
+            data2 = collect_folder_data(folder2, r"_start_", get_first_value)
 
         all_apps = sorted(set(list(data1.keys()) + list(data2.keys())))
 
@@ -461,12 +526,22 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
             ws.column_dimensions[column_letter].width = max_length + 2
 
 
-    def create_start_end_excel_file(folder1, prefix1, get_first_value=True):
-        #data_start = collect_folder_data(folder1, "_Start_", get_first_value)
-        data_start = collect_folder_data(folder1, r"_start_", get_first_value)
-
-        data_end = collect_folder_data(folder1, r"_end_", get_first_value)
-        #data_end = collect_folder_data(folder1, "_End_", get_first_value)
+    def create_start_end_excel_file(folder1, prefix1, get_first_value=True, precollected_data=None):
+        """
+        Create Start/End comparison Excel file with optional pre-collected data.
+        """
+        if precollected_data:
+            # Use pre-collected data
+            if get_first_value:
+                data_start = precollected_data['folder1']['start_first']
+                data_end = precollected_data['folder1']['end_first']
+            else:
+                data_start = precollected_data['folder1']['start_reentry']
+                data_end = precollected_data['folder1']['end_reentry']
+        else:
+            # Fallback to original behavior
+            data_start = collect_folder_data(folder1, r"_start_", get_first_value)
+            data_end = collect_folder_data(folder1, r"_end_", get_first_value)
         
 
         all_apps = sorted(set(list(data_start.keys()) + list(data_end.keys())))
@@ -510,7 +585,9 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
         return out_path
 
 
-    # Main logic starts here
+    # ============================================================
+    # OPTIMIZATION: Main logic - collect data once, create 4 Excel files
+    # ============================================================
     # Normalize UNC paths and handle network access
     folder1 = os.path.normpath(dut_fog_folder_path)
     folder2 = os.path.normpath(ref_fog_folder_path)
@@ -529,24 +606,30 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
     prefix1 = get_prefix_from_folder(folder1)
     prefix2 = get_prefix_from_folder(folder2)
 
-    # Create first Excel file (First entry)
-    out_path1 = create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=True)
+    # OPTIMIZATION: Collect all data in one pass
+    precollected_data = collect_all_data_once(folder1, folder2)
     
-    # Create second Excel file (Re-en ryentry)
-    out_path2 = create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=False)
+    # Clear cache after collection to free memory
+    clear_mem_file_cache()
 
-    # Create third Excel file (Compare Start vs End first entry within same folder)
-    out_path3 = create_start_end_excel_file(folder1, prefix1, get_first_value=True)
+    # Create first Excel file (First entry) - using pre-collected data
+    out_path1 = create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=True, precollected_data=precollected_data)
+    
+    # Create second Excel file (Re-entry) - using pre-collected data
+    out_path2 = create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=False, precollected_data=precollected_data)
 
-    # Create fourth Excel file (Compare Start vs End re-entry within same folder)
-    out_path4 = create_start_end_excel_file(folder1, prefix1, get_first_value=False)
+    # Create third Excel file (Compare Start vs End first entry) - using pre-collected data
+    out_path3 = create_start_end_excel_file(folder1, prefix1, get_first_value=True, precollected_data=precollected_data)
+
+    # Create fourth Excel file (Compare Start vs End re-entry) - using pre-collected data
+    out_path4 = create_start_end_excel_file(folder1, prefix1, get_first_value=False, precollected_data=precollected_data)
 
     # Select key
     selected_keys = ["MemFree", "MemAvailable"]
 
-    # Create summary sheet 
-    create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=True, selected_keys=selected_keys)
-    create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=False, selected_keys=selected_keys)
+    # Create summary sheet - using pre-collected data
+    create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=True, selected_keys=selected_keys, precollected_data=precollected_data)
+    create_excel_file(folder1, folder2, prefix1, prefix2, get_first_value=False, selected_keys=selected_keys, precollected_data=precollected_data)
 
     return out_path1, out_path2, out_path3, out_path4
 
