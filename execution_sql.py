@@ -79,9 +79,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -147,6 +147,13 @@ APP_NAME_NORMALIZATION = {
 }
 
 CACHE_VERSION = "1.0"  # Tăng lên "1.1", "2.0"... 
+
+# CRITICAL: Set environment variables TRƯỚC KHI import bất cứ thứ gì
+os.environ['NUMPY_EXPERIMENTAL_ARRAY_FUNCTION'] = '0'
+
+# [THÊM 2 DÒNG NÀY VÀO ĐÂY] - Ép Python kết nối thẳng vào localhost, bỏ qua Proxy/VPN
+os.environ['NO_PROXY'] = '127.0.0.1,localhost'
+os.environ['no_proxy'] = '127.0.0.1,localhost'
 
 # ---------------------------------------------------------------------------
 # Helper functions and analyze_trace 
@@ -2250,6 +2257,39 @@ def export_avg_to_json(
         """Tính toán metrics cho một app/launch_type"""
         if not cycles: return {}
         
+        # =========================================================
+        # [FIX QUAN TRỌNG] Đồng bộ Common End TS Type với Excel
+        # Đảm bảo DUT và REF có cùng Time Window (VD: Cùng tính tới ActivityIdle)
+        # =========================================================
+        adjusted_cycles = []
+        adjusted_compare = []
+        max_len = max(len(cycles), len(compare_cycles) if compare_cycles else 0)
+        
+        for i in range(max_len):
+            main_c = cycles[i] if i < len(cycles) else None
+            comp_c = compare_cycles[i] if compare_cycles and i < len(compare_cycles) else None
+            
+            if main_c and comp_c:
+                # Phân biệt DUT/REF để lấy type chuẩn xác nhất
+                dut_c = main_c if is_dut else comp_c
+                ref_c = comp_c if is_dut else main_c
+                
+                common_type = select_common_end_ts_type(dut_c, ref_c)
+                if common_type:
+                    main_c = get_metrics_for_end_ts_type(main_c, common_type)
+                    comp_c = get_metrics_for_end_ts_type(comp_c, common_type)
+            
+            if i < len(cycles):
+                adjusted_cycles.append(main_c)
+            if compare_cycles is not None and i < len(compare_cycles):
+                adjusted_compare.append(comp_c)
+                
+        # Ghi đè lại cycles bằng data đã được chuẩn hóa Time Window
+        cycles = adjusted_cycles
+        if compare_cycles is not None:
+            compare_cycles = adjusted_compare
+        # =========================================================
+
         # Lấy danh sách các cycle hợp lệ (không bị None)
         valid_cycles_with_idx = [(i, c) for i, c in enumerate(cycles) if c is not None]
         if not valid_cycles_with_idx: return {}
@@ -2474,8 +2514,8 @@ def export_avg_to_json(
                 
                 matched_results.append({
                     "name": display_name,
-                    # "dut": round(dut_val, 2),
-                    # "ref": round(ref_val, 2),
+                    "dut": round(dut_val, 2),
+                    "ref": round(ref_val, 2),
                     "diff": round(diff, 2)
                 })
                 
