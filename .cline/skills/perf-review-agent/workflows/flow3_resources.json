@@ -1,0 +1,213 @@
+{
+  "workflow_name": "Android App Performance Root Diagnostic - Flow 3: Resource Usage and Process Analysis",
+  "execution_mode": "exhaustive_sequential",
+  "nodes": {
+
+    "node_00_resource_check": {
+      "type": "check_group",
+      "description": "Resource Usage and Process Analysis",
+      "next": [
+        "node_01_load_apk_asset_check",
+        "node_02_block_io_check",
+        "node_03_process_abnormal"
+      ]
+    },
+
+    "node_01_load_apk_asset_check": {
+      "type": "check",
+      "source": ["DUT", "REF"],
+      "keys": ["loadApkAssets"],
+      "threshold": 30,
+      "operator": "DUT.loadApkAssets - REF.loadApkAssets > threshold",
+      "on_true": {
+        "next": "node_07_memory_check_detailed"
+      }
+    },
+
+    "node_02_block_io_check": {
+      "type": "check",
+      "source": ["DUT", "REF"],
+      "keys": ["Uninterruptible Sleep"],
+      "threshold": 30,
+      "operator": "DUT.'Uninterruptible Sleep' - REF.'Uninterruptible Sleep' > threshold",
+      "on_true": {
+        "next": "node_06_block_io_sub"
+      }
+    },
+
+    "node_06_block_io_sub": {
+      "type": "check_group",
+      "next": [
+        "node_07_memory_check_detailed",
+        "node_08_apk_size_check",
+        "node_11_pageboost_check"
+      ]
+    },
+
+    "node_07_memory_check_detailed": {
+      "type": "check",
+      "source": ["DUT", "REF"],
+      "keys": ["MemFree_MB", "MemAvailable_MB"],
+      "threshold": 50,
+      "operator": "REF.MemFree_MB - DUT.MemFree_MB > threshold OR REF.MemAvailable_MB - DUT.MemAvailable_MB > threshold",
+      "on_diff": {
+        "next": [
+          "node_13_memory_issue_detailed",
+          "node_14_query_memory_history"
+        ]
+      }
+    },
+
+    "node_08_apk_size_check": {
+      "type": "check",
+      "logic": {
+        "source": ["DUT", "REF"],
+        "key": "apk_size",
+        "operator": "exists"
+      },
+      "on_true": {
+        "next": [
+          "node_15_apk_size_issue",
+          "node_16_query_apk_size_history"
+        ]
+      }
+    },
+
+    "node_11_pageboost_check": {
+      "type": "check",
+      "source": ["DUT", "REF"],
+      "keys": ["Pageboostd_MB"],
+      "threshold": 10,
+      "operator": "REF.Pageboostd_MB - DUT.Pageboostd_MB > threshold",
+      "on_true": {
+        "next": "node_21_pageboost_issue"
+      }
+    },
+
+    "node_13_memory_issue_detailed": {
+      "type": "result",
+      "problem": "Memory free/available decreased (Mem Free {MemFree_MB.diff}; Mem Available {MemAvailable_MB.diff} ```Only show if diff > threshold```)",
+      "suggestion": "Suggest Kernel Memory team check mem free, mem available issue"
+    },
+
+    "node_15_apk_size_issue": {
+      "type": "result",
+      "problem": "APK size increased",
+      "suggestion": "Suggest app team optimize size",
+      "params": ["apk"]
+    },
+
+    "node_21_pageboost_issue": {
+      "type": "result",
+      "problem": "Pageboost prefetch amount decreased {REF.Pageboostd_MB - DUT.Pageboostd_MB} MB",
+      "suggestion": "Suggest Kernel Memory team check pageboost operation"
+    },
+
+    "node_14_query_memory_history": {
+      "type": "database_query",
+      "query": "Check memory history for similar issues",
+      "params": ["model", "app"]
+    },
+
+    "node_16_query_apk_size_history": {
+      "type": "database_query",
+      "query": "Check apksize by app and version, then compare",
+      "params": ["app", "version"]
+    },
+
+    "node_03_process_abnormal": {
+      "type": "check_group",
+      "next": [
+        "node_23_parallel_process_check",
+        "node_24_top_cpu_check",
+        "node_25_pss_check"
+      ]
+    },
+
+    "node_23_parallel_process_check": {
+      "type": "custom_check",
+      "logic": {
+        "source": "DUT",
+        "key": "start_process_abnormal",
+        "condition": "DUT.start_process_abnormal has any process_name"
+
+      },
+      "on_true": {
+        "param": ["process_name", "cycle"],
+        "next": [
+          "node_26_parallel_process",
+          "node_27_query_parallel"
+        ]
+      }
+    },
+
+    "node_24_top_cpu_check": {
+      "type": "check",
+      "logic": {
+        "source": ["DUT"],
+        "key": ["top_process_consume_by_cycle"],
+        "threshold": 300,
+        "operator": "For each cycle, if process.diff > threshold, store process.name and after finish all cycle check, go to on_true"
+      },
+      "on_true": {
+        "params": ["cycle", "process_name", "diff"],
+        "next": [
+          "node_28_top_cpu_issue",
+          "node_29_query_top_cpu_history"
+        ]
+      }
+    },
+
+    "node_25_pss_check": {
+      "type": "check",
+      "source": ["DUT", "REF"],
+      "keys": ["App_PSS_MB"],
+      "threshold": 50,
+      "operator": "DUT.App_PSS_MB - REF.App_PSS_MB > threshold",
+      "on_true": {
+        "next": [
+          "node_30_pss_increase_issue",
+          "node_31_query_pss_history"
+        ]
+      }
+    },
+
+    "node_26_parallel_process": {
+      "type": "result",
+      "problem": "Process start parallel detected {process_name} at cycle {cycle}",
+      "suggestion": "Suggest check with owner of process"
+    },
+
+    "node_28_top_cpu_issue": {
+      "type": "result",
+      "problem": " ```Group process by Cycle``` Cycle {cycle} Process consuming too much CPU time: {process_name_1} diff {diff_1} ms, {process_name_2} diff {diff_2} ms",
+      "suggestion": "Suggest check with owner of process",
+      "params": ["process_name"]
+    },
+
+    "node_30_pss_increase_issue": {
+      "type": "result",
+      "problem": "{App Test} PSS memory usage increased {DUT.App_PSS_MB - REF.App_PSS_MB} MB",
+      "suggestion": "Suggest app owner to debug PSS increase issue"
+    },
+
+    "node_27_query_parallel": {
+      "type": "database_query",
+      "query": "Search history similar issue",
+      "params": ["model", "process_name"]
+    },
+
+    "node_29_query_top_cpu_history": {
+      "type": "database_query",
+      "query": "Check if other models or apps have similar issue",
+      "params": ["model", "process_name"]
+    },
+
+    "node_31_query_pss_history": {
+      "type": "database_query",
+      "query": "Search history",
+      "params": ["app"]
+    }
+
+  }
+}

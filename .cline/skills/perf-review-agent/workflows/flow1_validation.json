@@ -1,0 +1,80 @@
+{
+  "workflow_name": "Android App Performance Root Diagnostic - Flow 1: Initial Validation",
+  "execution_mode": "exhaustive_sequential",
+  "nodes": {
+
+    "node_00_precondition_check": {
+      "type": "check_group",
+      "description": "Pre-setting & Test condition",
+      "next": [
+        "node_01_uptime_check",
+        "node_02_anr_fatal_check",
+        "node_03_touch_duration_check"
+      ]
+    },
+
+    "node_01_uptime_check": {
+      "type": "check",
+      "logic": {
+        "source": ["DUT", "REF"],
+        "key": "uptime_minutes",
+        "threshold": 10,
+        "operator": "DUT.uptime_minutes > threshold OR REF.uptime_minutes > threshold"
+      },
+      "on_true": {
+        "next": "node_04_retest_condition"
+      }
+    },
+
+    "node_04_retest_condition": {
+      "type": "result",
+      "problem": "Test condition invalid due to uptime > 10 mins",
+      "suggestion": "Suggest re-test DUT or REF to correct test condition"
+    },
+
+    "node_02_anr_fatal_check": {
+      "type": "check",
+      "logic": {
+        "source": ["DUT", "REF"],
+        "keys": ["ANR", "FATAL"],
+        "operator": "exists"
+      },
+      "on_true": {
+        "next": [
+          "node_05_anr_fatal_found",
+          "node_06_query_anr_history"
+        ]
+      }
+    },
+
+    "node_05_anr_fatal_found": {
+      "type": "result",
+      "problem": "FATAL or ANR detected",
+      "suggestion": "Suggest check FATAL/ANR"
+    },
+
+    "node_06_query_anr_history": {
+      "type": "database_query",
+      "query": "Search history about ANR/FATAL",
+      "params": ["app"]
+    },
+
+    "node_03_touch_duration_check": {
+      "type": "comparison",
+      "source": ["DUT", "REF"],
+      "keys": ["touch_duration"],
+      "threshold": 10,
+      "operator": "DUT.touch_duration - REF.touch_duration > threshold",
+      "on_diff": {
+        "next": "node_07_touch_duration_issue"
+      }
+    },
+
+    "node_07_touch_duration_issue": {
+      "type": "result",
+      "problem": "Touch duration higher on DUT {DUT.touch_duration - REF.touch_duration} ms",
+      "suggestion": "Suggest system team for noticing this problem"
+    }
+
+  }
+}

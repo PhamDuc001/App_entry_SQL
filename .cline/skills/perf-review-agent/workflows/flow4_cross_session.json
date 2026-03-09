@@ -1,0 +1,716 @@
+{
+  "workflow_name": "Android App Performance Root Diagnostic - Flow 4: Cross-Session Comparison (DUT1 vs DUT2)",
+  "execution_mode": "exhaustive_sequential",
+  "description": "Compares two DUT sessions to detect regressions or improvements between app versions. Normalized formula: delta = (DUT2 - REF2) - (DUT1 - REF1). Positive delta = DUT2 regressed. Covers ALL metric categories from Flow 1, 2, 3.",
+  "precondition": "Requires at least 2 DUT sessions (DUT1+REF1, DUT2+REF2).",
+
+  "nodes": {
+
+    "node_00_cross_session_root": {
+      "type": "check_group",
+      "description": "Cross-Session Regression & Improvement Analysis — mirrors Flow1/2/3 checks across sessions",
+      "next": [
+        "node_G1_precondition_group",
+        "node_G2_performance_group",
+        "node_G3_resource_group"
+      ]
+    },
+
+    "__comment_group1": "══════════════════════════════════════════════════════════",
+    "__comment_group1b": "  GROUP 1 — Precondition & Validation (mirrors Flow 1)",
+    "__comment_group1c": "══════════════════════════════════════════════════════════",
+
+    "node_G1_precondition_group": {
+      "type": "check_group",
+      "description": "Cross-session: Precondition & Validation checks (Flow 1 scope)",
+      "next": [
+        "node_01_uptime_regression",
+        "node_02_touch_duration_regression",
+        "node_03_state_mismatch_check",
+        "node_04_exec_time_regression",
+        "node_05_crash_regression"
+      ]
+    },
+
+    "node_01_uptime_regression": {
+      "type": "custom_check",
+      "description": "Check if uptime conditions differ significantly between DUT1 and DUT2 test sessions",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "key": "uptime_minutes",
+        "condition": "abs(DUT2.uptime_minutes - DUT1.uptime_minutes) > 5"
+      },
+      "on_true": {
+        "next": "node_01a_uptime_mismatch_result"
+      }
+    },
+
+    "node_01a_uptime_mismatch_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "Uptime conditions differ between sessions: DUT1={DUT1.uptime_minutes} min vs DUT2={DUT2.uptime_minutes} min — system cache state may not be equivalent, affecting comparison reliability",
+      "suggestion": "Ensure both test sessions start with similar device uptime (within 5 minutes) for valid cross-session comparison"
+    },
+
+    "node_02_touch_duration_regression": {
+      "type": "check",
+      "description": "Check if touch duration regressed between DUT versions (normalized vs REF)",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["touch_duration"],
+      "threshold": 10,
+      "operator": "delta = (DUT2.touch_duration - REF2.touch_duration) - (DUT1.touch_duration - REF1.touch_duration); delta > threshold",
+      "on_true": {
+        "next": "node_02a_touch_duration_result"
+      }
+    },
+
+    "node_02a_touch_duration_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "Touch duration regressed in DUT2 vs DUT1: normalized delta = {delta} ms — system responsiveness may have degraded in new version",
+      "suggestion": "Suggest System team check input handling changes between DUT1 and DUT2 builds"
+    },
+
+    "node_03_state_mismatch_check": {
+      "type": "custom_check",
+      "description": "Check if same app has different launch states (Cold/Warm) across DUT1 and DUT2 — makes comparison invalid",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "key": "State",
+        "condition": "DUT1.State[0] != DUT2.State[0]"
+      },
+      "on_true": {
+        "next": "node_03a_state_mismatch_result"
+      }
+    },
+
+    "node_03a_state_mismatch_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "Launch state mismatch across sessions: DUT1={DUT1.State[0]} vs DUT2={DUT2.State[0]} — cross-session comparison is unreliable for this app",
+      "suggestion": "Re-run test sessions ensuring same launch state (both Cold or both Warm) before comparing"
+    },
+
+    "node_04_exec_time_regression": {
+      "type": "check",
+      "description": "Check App Execution Time regression between DUT versions (primary metric)",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["App Execution Time"],
+      "threshold": 10,
+      "operator": "delta = (DUT2['App Execution Time'] - REF2['App Execution Time']) - (DUT1['App Execution Time'] - REF1['App Execution Time']); delta > threshold",
+      "on_true": {
+        "next": [
+          "node_04a_exec_regression_result",
+          "node_04b_query_exec_regression"
+        ]
+      },
+      "on_improve": {
+        "threshold": -10,
+        "operator": "delta < -threshold",
+        "next": "node_04c_exec_improvement_result"
+      }
+    },
+
+    "node_04a_exec_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "App Execution Time regressed in DUT2 vs DUT1: normalized delta = {delta} ms (DUT2-REF2={DUT2.exec - REF2.exec} ms vs DUT1-REF1={DUT1.exec - REF1.exec} ms)",
+      "suggestion": "Suggest App team compare DUT1 and DUT2 builds. Investigate sub-metrics (Bind Application, Running, Block I/O) for root cause"
+    },
+
+    "node_04c_exec_improvement_result": {
+      "type": "result",
+      "severity": "INFO",
+      "problem": "IMPROVEMENT: App Execution Time improved in DUT2 vs DUT1: normalized delta = {delta} ms",
+      "suggestion": "Verify improvement is consistent across all cycles and not caused by state/environment difference"
+    },
+
+    "node_04b_query_exec_regression": {
+      "type": "database_query",
+      "query": "Check commit history between DUT1 and DUT2 build versions for this app",
+      "params": ["app", "dut1_version", "dut2_version"]
+    },
+
+    "node_05_crash_regression": {
+      "type": "custom_check",
+      "description": "Check if crashes (ANR/FATAL) appeared or increased in DUT2 vs DUT1",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "key": "crashes",
+        "condition": "DUT2.crashes > DUT1.crashes"
+      },
+      "on_true": {
+        "next": [
+          "node_05a_crash_regression_result",
+          "node_05b_query_crash_history"
+        ]
+      }
+    },
+
+    "node_05a_crash_regression_result": {
+      "type": "result",
+      "severity": "CRITICAL",
+      "problem": "New crashes in DUT2: DUT2={DUT2.crashes} crashes vs DUT1={DUT1.crashes} crashes (ANR/FATAL) — regression introduced in new version",
+      "suggestion": "URGENT: Suggest App team investigate crash introduced in DUT2 build before release"
+    },
+
+    "node_05b_query_crash_history": {
+      "type": "database_query",
+      "query": "Search crash history for this app across recent builds",
+      "params": ["app", "model", "dut2_version"]
+    },
+
+    "__comment_group2": "══════════════════════════════════════════════════════════",
+    "__comment_group2b": "  GROUP 2 — Core Performance State (mirrors Flow 2)",
+    "__comment_group2c": "══════════════════════════════════════════════════════════",
+
+    "node_G2_performance_group": {
+      "type": "check_group",
+      "description": "Cross-session: Core performance state checks (Flow 2 scope)",
+      "next": [
+        "node_06_running_regression",
+        "node_07_sleeping_regression",
+        "node_08_runnable_regression",
+        "node_09_compiler_regression",
+        "node_10_frequency_regression",
+        "node_11_binder_regression",
+        "node_12_priority_regression",
+        "node_13_beks_regression",
+        "node_14_bind_app_regression",
+        "node_15_start_kill_regression"
+      ]
+    },
+
+    "node_06_running_regression": {
+      "type": "check",
+      "description": "Check if Running time regressed between DUT versions (normalized vs REF)",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["Running"],
+      "threshold": 50,
+      "operator": "delta = (DUT2.Running - REF2.Running) - (DUT1.Running - REF1.Running); delta > threshold",
+      "on_true": {
+        "next": [
+          "node_06a_running_regression_result",
+          "node_06b_running_sub_group"
+        ]
+      }
+    },
+
+    "node_06a_running_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "Running time regressed in DUT2 vs DUT1: normalized delta = {delta} ms — app executing more CPU work in new version",
+      "suggestion": "Suggest App team check what additional code paths were added in DUT2 that increase CPU execution time"
+    },
+
+    "node_06b_running_sub_group": {
+      "type": "check_group",
+      "description": "Drill down into Running regression root causes",
+      "next": [
+        "node_09_compiler_regression",
+        "node_10_frequency_regression",
+        "node_06c_query_running_version"
+      ]
+    },
+
+    "node_06c_query_running_version": {
+      "type": "database_query",
+      "query": "Check new app version changes or fixes that may affect running time",
+      "params": ["app", "dut1_version", "dut2_version"]
+    },
+
+    "node_07_sleeping_regression": {
+      "type": "check",
+      "description": "Check if Sleeping time regressed between DUT versions (normalized vs REF)",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["Sleeping"],
+      "threshold": 50,
+      "operator": "delta = (DUT2.Sleeping - REF2.Sleeping) - (DUT1.Sleeping - REF1.Sleeping); delta > threshold",
+      "on_true": {
+        "next": [
+          "node_07a_sleeping_regression_result",
+          "node_07b_sleeping_sub_group"
+        ]
+      }
+    },
+
+    "node_07a_sleeping_regression_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "Sleeping time regressed in DUT2 vs DUT1: normalized delta = {delta} ms — app spending more time waiting (IPC, binder, locks) in new version",
+      "suggestion": "Suggest App team check for new blocking calls or IPC overhead added in DUT2"
+    },
+
+    "node_07b_sleeping_sub_group": {
+      "type": "check_group",
+      "description": "Drill down into Sleeping regression — mirrors Flow 2 node_07_sleeping_sub_issues",
+      "next": [
+        "node_11_binder_regression",
+        "node_07c_query_sleeping_version"
+      ]
+    },
+
+    "node_07c_query_sleeping_version": {
+      "type": "database_query",
+      "query": "Check app fix history related to sleeping/blocking regression",
+      "params": ["app", "dut1_version", "dut2_version"]
+    },
+
+    "node_08_runnable_regression": {
+      "type": "check",
+      "description": "Check if Runnable time regressed between DUT versions — indicates CPU contention increased",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["Runnable"],
+      "threshold": 50,
+      "operator": "delta = (DUT2.Runnable - REF2.Runnable) - (DUT1.Runnable - REF1.Runnable); delta > threshold",
+      "on_true": {
+        "next": [
+          "node_08a_runnable_regression_result",
+          "node_12_priority_regression"
+        ]
+      }
+    },
+
+    "node_08a_runnable_regression_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "Runnable time regressed in DUT2 vs DUT1: normalized delta = {delta} ms — more CPU contention in new version",
+      "suggestion": "Suggest System team check if new background processes were introduced in DUT2 build"
+    },
+
+    "node_09_compiler_regression": {
+      "type": "custom_check",
+      "description": "Check if compiler type degraded between DUT versions — mirrors Flow 2 node_10_compiler_check",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "key": "compiler_type",
+        "condition": "compiler_rank = {'speed': 3, 'speed-profile': 2, 'verify': 1}; compiler_rank[DUT2.compiler_type] < compiler_rank[DUT1.compiler_type]"
+      },
+      "on_true": {
+        "next": [
+          "node_09a_compiler_regression_result",
+          "node_09b_query_compiler_change"
+        ]
+      }
+    },
+
+    "node_09a_compiler_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "Compiler type degraded between versions: DUT1={DUT1.compiler_type} → DUT2={DUT2.compiler_type} — Cold launch will be significantly slower in DUT2 build",
+      "suggestion": "Suggest App TG restore speed-profile compilation in DUT2 build"
+    },
+
+    "node_09b_query_compiler_change": {
+      "type": "database_query",
+      "query": "Check if compiler config was changed between build versions",
+      "params": ["app", "dut1_version", "dut2_version"]
+    },
+
+    "node_10_frequency_regression": {
+      "type": "check",
+      "description": "Check if CPU frequency profile regressed between DUT versions — mirrors Flow 2 node_12_frequency_check",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["frequency_by_cycle"],
+      "threshold": 15,
+      "operator": "## Cross-session frequency analysis: For each phase (bindApplication, activityStart, activityResume, Choreographer), compare the highest-frequency bucket percentage. Compute: delta_freq = (DUT2_high_freq_pct - REF2_high_freq_pct) - (DUT1_high_freq_pct - REF1_high_freq_pct). If delta_freq < -threshold (DUT2 runs at high freq less than DUT1 did), flag as regression.",
+      "on_true": {
+        "next": [
+          "node_10a_frequency_regression_result",
+          "node_10b_query_frequency"
+        ]
+      }
+    },
+
+    "node_10a_frequency_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "CPU frequency profile regressed in DUT2 vs DUT1: app running at lower CPU frequency in new build (high-freq usage delta < -{threshold}% in one or more phases)",
+      "suggestion": "Suggest System team check DVFS/scheduler config changes between DUT1 and DUT2 builds"
+    },
+
+    "node_10b_query_frequency": {
+      "type": "database_query",
+      "query": "Check frequency config or scheduler changes between builds",
+      "params": ["model", "dut1_version", "dut2_version"]
+    },
+
+    "node_11_binder_regression": {
+      "type": "check",
+      "description": "Check if binder transaction count/duration regressed between DUT versions — mirrors Flow 2 node_19_binder_check",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["binder_transaction"],
+      "threshold": 10,
+      "operator": "delta_count = (DUT2.binder_transaction.count - REF2.binder_transaction.count) - (DUT1.binder_transaction.count - REF1.binder_transaction.count); delta_count > threshold",
+      "on_true": {
+        "next": "node_11a_binder_regression_result"
+      }
+    },
+
+    "node_11a_binder_regression_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "Binder transaction count regressed in DUT2 vs DUT1: normalized delta = {delta_count} binder calls — new IPC overhead introduced in DUT2",
+      "suggestion": "Suggest App team check for new binder calls or IPC patterns added in DUT2 build"
+    },
+
+    "node_12_priority_regression": {
+      "type": "check",
+      "description": "Check if thread scheduling priority regressed between DUT versions — mirrors Flow 2 node_08_priority_check",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["priority_by_cycle"],
+      "threshold": 15,
+      "operator": "## Cross-session priority analysis: For each phase (bindApplication, activityStart, activityResume, Choreographer), compare high-priority (low numeric value) percentage. Compute: delta_prio = (DUT2_high_prio_pct - REF2_high_prio_pct) - (DUT1_high_prio_pct - REF1_high_prio_pct). If delta_prio < -threshold, DUT2 has worse priority scheduling than DUT1.",
+      "on_true": {
+        "next": [
+          "node_12a_priority_regression_result",
+          "node_12b_query_priority"
+        ]
+      }
+    },
+
+    "node_12a_priority_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "Thread scheduling priority regressed in DUT2 vs DUT1: main thread deprioritized more in new build (high-priority usage delta < -{threshold}% in one or more phases)",
+      "suggestion": "Suggest System team check scheduling priority config changes between DUT1 and DUT2 builds"
+    },
+
+    "node_12b_query_priority": {
+      "type": "database_query",
+      "query": "Check scheduling or priority config changes between builds",
+      "params": ["model", "dut1_version", "dut2_version"]
+    },
+
+    "node_13_beks_regression": {
+      "type": "custom_check",
+      "description": "Check if BEKS protection setting changed between DUT1 and DUT2 — mirrors Flow 2 node_35_beks_check",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "key": "beks",
+        "condition": "DUT1.beks != DUT2.beks"
+      },
+      "on_true": {
+        "next": "node_13a_beks_regression_result"
+      }
+    },
+
+    "node_13a_beks_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "BEKS protection config changed between sessions: DUT1={DUT1.beks} vs DUT2={DUT2.beks} — may affect launch state (Cold vs Warm) and performance",
+      "suggestion": "Suggest System team verify BEKS config is consistent between DUT1 and DUT2 builds"
+    },
+
+    "node_14_bind_app_regression": {
+      "type": "check",
+      "description": "Check Bind Application regression between DUT versions (Cold launch only) — key signal for app init overhead increase",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["Bind Application"],
+      "launch_type_filter": "Cold",
+      "threshold": 10,
+      "operator": "delta = (DUT2['Bind Application'] - REF2['Bind Application']) - (DUT1['Bind Application'] - REF1['Bind Application']); delta > threshold",
+      "on_true": {
+        "next": "node_14a_bind_regression_result"
+      }
+    },
+
+    "node_14a_bind_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "Bind Application regressed in DUT2 vs DUT1: normalized delta = {delta} ms — new class loading or Application.onCreate() overhead in new version",
+      "suggestion": "Suggest App team check what changed in Application.onCreate() or static initializers between DUT1 and DUT2 builds"
+    },
+
+    "node_15_start_kill_regression": {
+      "type": "custom_check",
+      "description": "Check if start/kill patterns changed between DUT versions — mirrors Flow 2 node_36_start_kill_check",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "keys": ["start_reason", "kill_reason"],
+        "condition": "DUT2.start_reason.length != DUT1.start_reason.length OR DUT2.kill_reason.length != DUT1.kill_reason.length"
+      },
+      "on_true": {
+        "next": [
+          "node_15a_start_kill_regression_result",
+          "node_15b_query_start_kill"
+        ]
+      }
+    },
+
+    "node_15a_start_kill_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "Start/Kill pattern changed between sessions: DUT1 start={DUT1.start_reason.length}/kill={DUT1.kill_reason.length} vs DUT2 start={DUT2.start_reason.length}/kill={DUT2.kill_reason.length} — different launch state context between test sessions",
+      "suggestion": "Suggest App team and SWPL investigate start/kill count change between DUT1 and DUT2 builds"
+    },
+
+    "node_15b_query_start_kill": {
+      "type": "database_query",
+      "query": "Check start/kill history for this app between build versions",
+      "params": ["app", "dut1_version", "dut2_version"]
+    },
+
+    "__comment_group3": "══════════════════════════════════════════════════════════",
+    "__comment_group3b": "  GROUP 3 — Resource Usage (mirrors Flow 3)",
+    "__comment_group3c": "══════════════════════════════════════════════════════════",
+
+    "node_G3_resource_group": {
+      "type": "check_group",
+      "description": "Cross-session: Resource usage checks (Flow 3 scope)",
+      "next": [
+        "node_16_load_apk_regression",
+        "node_17_block_io_regression",
+        "node_18_process_abnormal_group",
+        "node_22_pss_regression"
+      ]
+    },
+
+    "node_16_load_apk_regression": {
+      "type": "check",
+      "description": "Check if LoadApkAssets time regressed between DUT versions — mirrors Flow 3 node_01_load_apk_asset_check",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["loadApkAssets"],
+      "threshold": 30,
+      "operator": "delta = (DUT2.loadApkAssets - REF2.loadApkAssets) - (DUT1.loadApkAssets - REF1.loadApkAssets); delta > threshold",
+      "on_true": {
+        "next": [
+          "node_16a_load_apk_regression_result",
+          "node_16b_apk_size_check"
+        ]
+      }
+    },
+
+    "node_16a_load_apk_regression_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "LoadApkAssets time regressed in DUT2 vs DUT1: normalized delta = {delta} ms — new or larger assets being loaded in new version",
+      "suggestion": "Suggest App team check for new assets or APK size increase in DUT2 build"
+    },
+
+    "node_16b_apk_size_check": {
+      "type": "check",
+      "description": "Check if APK size increased in DUT2 — mirrors Flow 3 node_08_apk_size_check",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "key": "apk_size",
+        "condition": "DUT2.apk_size > DUT1.apk_size"
+      },
+      "on_true": {
+        "next": [
+          "node_16c_apk_size_result",
+          "node_16d_query_apk_size"
+        ]
+      }
+    },
+
+    "node_16c_apk_size_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "APK size increased in DUT2 vs DUT1: DUT1={DUT1.apk_size} vs DUT2={DUT2.apk_size} — larger APK contributes to slower LoadApkAssets",
+      "suggestion": "Suggest App team optimize APK size in DUT2 build"
+    },
+
+    "node_16d_query_apk_size": {
+      "type": "database_query",
+      "query": "Check APK size history by app and version, compare DUT1 vs DUT2",
+      "params": ["app", "dut1_version", "dut2_version"]
+    },
+
+    "node_17_block_io_regression": {
+      "type": "check",
+      "description": "Check if Uninterruptible Sleep (I/O wait) regressed between DUT versions — mirrors Flow 3 node_02_block_io_check",
+      "source": ["DUT1", "REF1", "DUT2", "REF2"],
+      "keys": ["Uninterruptible Sleep"],
+      "threshold": 30,
+      "operator": "delta = (DUT2['Uninterruptible Sleep'] - REF2['Uninterruptible Sleep']) - (DUT1['Uninterruptible Sleep'] - REF1['Uninterruptible Sleep']); delta > threshold",
+      "on_true": {
+        "next": "node_17a_block_io_sub_group"
+      }
+    },
+
+    "node_17a_block_io_sub_group": {
+      "type": "check_group",
+      "description": "Drill down into Block I/O regression root causes — mirrors Flow 3 node_06_block_io_sub",
+      "next": [
+        "node_17b_memory_regression",
+        "node_17c_pageboost_regression",
+        "node_17d_block_io_result"
+      ]
+    },
+
+    "node_17d_block_io_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "Uninterruptible Sleep (Block I/O wait) regressed in DUT2 vs DUT1: normalized delta = {delta} ms — more disk I/O blocking in new version",
+      "suggestion": "Investigate memory pressure and pageboost data to identify root cause (see sub-checks)"
+    },
+
+    "node_17b_memory_regression": {
+      "type": "check",
+      "description": "Check if memory conditions degraded between DUT versions, causing more I/O — mirrors Flow 3 node_07_memory_check_detailed",
+      "source": ["DUT1", "DUT2"],
+      "keys": ["MemFree_MB", "MemAvailable_MB"],
+      "threshold": 50,
+      "operator": "DUT1.MemFree_MB - DUT2.MemFree_MB > threshold OR DUT1.MemAvailable_MB - DUT2.MemAvailable_MB > threshold",
+      "on_true": {
+        "next": [
+          "node_17b1_memory_regression_result",
+          "node_17b2_query_memory_regression"
+        ]
+      }
+    },
+
+    "node_17b1_memory_regression_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "Available memory decreased in DUT2 vs DUT1: MemFree -{DUT1.MemFree_MB - DUT2.MemFree_MB} MB, MemAvailable -{DUT1.MemAvailable_MB - DUT2.MemAvailable_MB} MB — memory pressure is likely causing more Block I/O",
+      "suggestion": "Suggest Kernel Memory team investigate memory regression between DUT1 and DUT2 builds"
+    },
+
+    "node_17b2_query_memory_regression": {
+      "type": "database_query",
+      "query": "Check memory trend across recent builds for this model",
+      "params": ["model", "dut1_version", "dut2_version"]
+    },
+
+    "node_17c_pageboost_regression": {
+      "type": "check",
+      "description": "Check if Pageboost prefetch amount decreased between DUT versions — mirrors Flow 3 node_11_pageboost_check",
+      "source": ["DUT1", "DUT2"],
+      "keys": ["Pageboostd_MB"],
+      "threshold": 10,
+      "operator": "DUT1.Pageboostd_MB - DUT2.Pageboostd_MB > threshold",
+      "on_true": {
+        "next": "node_17c1_pageboost_regression_result"
+      }
+    },
+
+    "node_17c1_pageboost_regression_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "Pageboost prefetch amount decreased in DUT2 vs DUT1: {DUT1.Pageboostd_MB - DUT2.Pageboostd_MB} MB less prefetched — may cause more Block I/O at launch",
+      "suggestion": "Suggest Kernel Memory team check pageboost operation changes between DUT1 and DUT2 builds"
+    },
+
+    "node_18_process_abnormal_group": {
+      "type": "check_group",
+      "description": "Cross-session: Process & CPU anomaly checks — mirrors Flow 3 node_03_process_abnormal",
+      "next": [
+        "node_19_parallel_process_regression",
+        "node_20_top_cpu_regression",
+        "node_21_kill_reason_regression"
+      ]
+    },
+
+    "node_19_parallel_process_regression": {
+      "type": "custom_check",
+      "description": "Check if new abnormal parallel processes appeared in DUT2 that were absent in DUT1 — mirrors Flow 3 node_23_parallel_process_check",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "key": "start_process_abnormal",
+        "condition": "DUT2.start_process_abnormal has process_names NOT present in DUT1.start_process_abnormal"
+      },
+      "on_true": {
+        "params": ["new_process_names"],
+        "next": [
+          "node_19a_parallel_process_result",
+          "node_19b_query_parallel"
+        ]
+      }
+    },
+
+    "node_19a_parallel_process_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "New abnormal parallel processes detected in DUT2 that were not in DUT1: {new_process_names} — new background activity at launch time in new version",
+      "suggestion": "Suggest App team and SWPL investigate new processes introduced in DUT2 build"
+    },
+
+    "node_19b_query_parallel": {
+      "type": "database_query",
+      "query": "Search history for similar parallel process issue on this model",
+      "params": ["model", "new_process_names"]
+    },
+
+    "node_20_top_cpu_regression": {
+      "type": "check",
+      "description": "Check if top CPU-consuming processes worsened between DUT versions — mirrors Flow 3 node_24_top_cpu_check",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "key": "top_cpu_by_cycle",
+        "threshold": 300,
+        "operator": "For each cycle in DUT2, check if any process.diff > threshold AND that process.diff is > corresponding DUT1 cycle's same process.diff by more than 100ms. Collect (cycle, process_name, dut2_diff, dut1_diff) for flagged entries."
+      },
+      "on_true": {
+        "params": ["cycle", "process_name", "dut2_diff", "dut1_diff"],
+        "next": [
+          "node_20a_top_cpu_regression_result",
+          "node_20b_query_top_cpu"
+        ]
+      }
+    },
+
+    "node_20a_top_cpu_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "CPU consumption worsened in DUT2 vs DUT1: Cycle {cycle}, process {process_name} used {dut2_diff} ms in DUT2 vs {dut1_diff} ms in DUT1 — process became more CPU-intensive in new version",
+      "suggestion": "Suggest SWPL check with owner of {process_name} process about increased CPU usage in DUT2 build"
+    },
+
+    "node_20b_query_top_cpu": {
+      "type": "database_query",
+      "query": "Check if other models or apps have similar CPU regression for this process",
+      "params": ["model", "process_name", "dut2_version"]
+    },
+
+    "node_21_kill_reason_regression": {
+      "type": "custom_check",
+      "description": "Check if new kill reasons appeared in DUT2 that were absent in DUT1 — mirrors Flow 2 node_36_start_kill_check kill aspect",
+      "logic": {
+        "source": ["DUT1", "DUT2"],
+        "keys": ["kill_reason"],
+        "condition": "DUT2.kill_reason.length > DUT1.kill_reason.length AND DUT1.kill_reason.length == 0"
+      },
+      "on_true": {
+        "next": "node_21a_kill_regression_result"
+      }
+    },
+
+    "node_21a_kill_regression_result": {
+      "type": "result",
+      "severity": "HIGH",
+      "problem": "Kill reasons appeared in DUT2 that were not in DUT1: {DUT2.kill_reason} — app being killed more aggressively in new version (memory pressure or new background policy)",
+      "suggestion": "Suggest App team and SWPL investigate new kill events introduced in DUT2 build"
+    },
+
+    "node_22_pss_regression": {
+      "type": "check",
+      "description": "Check if App PSS memory footprint increased in DUT2 — mirrors Flow 3 node_25_pss_check",
+      "source": ["DUT1", "DUT2"],
+      "keys": ["App_PSS_MB"],
+      "threshold": 50,
+      "operator": "DUT2.App_PSS_MB - DUT1.App_PSS_MB > threshold",
+      "on_true": {
+        "next": [
+          "node_22a_pss_regression_result",
+          "node_22b_query_pss_regression"
+        ]
+      }
+    },
+
+    "node_22a_pss_regression_result": {
+      "type": "result",
+      "severity": "MEDIUM",
+      "problem": "App PSS memory increased in DUT2: {DUT2.App_PSS_MB - DUT1.App_PSS_MB} MB more than DUT1 (DUT1={DUT1.App_PSS_MB} MB → DUT2={DUT2.App_PSS_MB} MB)",
+      "suggestion": "Suggest App owner debug PSS increase — possible memory leak or new resource allocation in DUT2 build"
+    },
+
+    "node_22b_query_pss_regression": {
+      "type": "database_query",
+      "query": "Search PSS memory trend for this app across builds",
+      "params": ["app", "dut1_version", "dut2_version"]
+    }
+
+  }
+}
