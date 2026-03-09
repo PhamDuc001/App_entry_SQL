@@ -188,3 +188,6 @@ Thumbs.db
 
 # Executable files
 *.exe
+
+# Workspace RAG
+.workspace_rag/
