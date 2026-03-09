@@ -79,9 +79,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -2616,8 +2616,8 @@ def export_avg_to_json(
 
         return result
 
-    # =====================
-    # BUILD & WRITE PER-APP JSON FILES
+        # =====================
+    # BUILD & WRITE CONSOLIDATED JSON FILES (MASTER FILES)
     # =====================
     timestamp = datetime.datetime.now().isoformat()
     
@@ -2628,62 +2628,106 @@ def export_avg_to_json(
     output_dir = os.path.join(output_folder, "Output")
     os.makedirs(output_dir, exist_ok=True)
     
-    print(f"\n Exporting per-app JSON files...")
+    print(f"\n Exporting consolidated JSON files (1 for DUT, 1 for REF)...")
+
+    # [NEW] Khởi tạo 2 biến Master Dictionary để chứa toàn bộ data
+    master_dut = {
+        "device_code": dut_device_code,
+        "timestamp": timestamp,
+        "type": "DUT",
+        "apps_data": []  # List chứa data của tất cả các app
+    }
+    
+    master_ref = {
+        "device_code": ref_device_code,
+        "timestamp": timestamp,
+        "type": "REF",
+        "apps_data": []  # List chứa data của tất cả các app
+    }
     
     # Export từng app cho DUT và REF
     for app_name in sorted(all_apps):
+        
+        # =========================================================================
+        # [FIX QUAN TRỌNG] Lấy data gốc và Đồng bộ time window (end_ts) giữa DUT & REF 
+        # Giống hệt logic tiền xử lý của bảng Excel để metrics (CPU, LoadApk...) khớp 100%
+        # =========================================================================
+        raw_dut_entry = dut_results.get(app_name, {}).get("entry", [])
+        raw_ref_entry = ref_results.get(app_name, {}).get("entry", [])
+        
+        max_c = max(len(raw_dut_entry), len(raw_ref_entry))
+        dut_entry_cycles = []
+        ref_entry_cycles = []
+        
+        for i in range(max_c):
+            d_c = raw_dut_entry[i] if i < len(raw_dut_entry) else None
+            r_c = raw_ref_entry[i] if i < len(raw_ref_entry) else None
+            
+            if d_c and r_c:
+                common_type = select_common_end_ts_type(d_c, r_c)
+                if common_type:
+                    dut_entry_cycles.append(get_metrics_for_end_ts_type(d_c, common_type))
+                    ref_entry_cycles.append(get_metrics_for_end_ts_type(r_c, common_type))
+                else:
+                    dut_entry_cycles.append(d_c)
+                    ref_entry_cycles.append(r_c)
+            elif d_c:
+                dut_entry_cycles.append(d_c)
+                ref_entry_cycles.append(None)
+            elif r_c:
+                dut_entry_cycles.append(None)
+                ref_entry_cycles.append(r_c)
+
         # =====================
         # DUT - Chỉ lấy entry
         # =====================
-        dut_entry_cycles = dut_results.get(app_name, {}).get("entry", [])
-        ref_entry_cycles = ref_results.get(app_name, {}).get("entry", []) # Lấy sẵn ref cycles
-        
-        if dut_entry_cycles:
-            # [CẬP NHẬT 2] Truyền compare_cycles=ref_entry_cycles và is_dut=True
+        if any(c is not None for c in dut_entry_cycles):
+            # Truyền compare_cycles=ref_entry_cycles và is_dut=True
             dut_metrics = calculate_metrics_for_app(
                 dut_entry_cycles, app_name, "entry", dut_folder_path, 
                 compare_cycles=ref_entry_cycles, is_dut=True
             )
             if dut_metrics:
-                # Flatten structure: device_code, timestamp, type, app, entry
-                dut_json = {
-                    "device_code": dut_device_code,
-                    "timestamp": timestamp,
-                    "type": "DUT",
+                # [NEW] Nhét data của app này vào danh sách tổng của DUT
+                master_dut["apps_data"].append({
                     "app": app_name,
                     "entry": dut_metrics
-                }
-                
-                # Write to file: app_name_dut.json
-                dut_file_path = os.path.join(output_dir, f"{app_name}_dut.json")
-                with open(dut_file_path, 'w', encoding='utf-8') as f:
-                    json.dump(dut_json, f, indent=2, ensure_ascii=False)
-                print(f"  Created: {app_name}_dut.json")
+                })
         
         # =====================
         # REF - Chỉ lấy entry
         # =====================
-        if ref_entry_cycles:
-            # [CẬP NHẬT 2] Truyền compare_cycles=dut_entry_cycles và is_dut=False
+        if any(c is not None for c in ref_entry_cycles):
+            # Truyền compare_cycles=dut_entry_cycles và is_dut=False
             ref_metrics = calculate_metrics_for_app(
                 ref_entry_cycles, app_name, "entry", ref_folder_path, 
                 compare_cycles=dut_entry_cycles, is_dut=False
             )
             if ref_metrics:
-                # Flatten structure
-                ref_json = {
-                    "device_code": ref_device_code,
-                    "timestamp": timestamp,
-                    "type": "REF",
+                # [NEW] Nhét data của app này vào danh sách tổng của REF
+                master_ref["apps_data"].append({
                     "app": app_name,
                     "entry": ref_metrics
-                }
-                
-                # Write to file: app_name_ref.json
-                ref_file_path = os.path.join(output_dir, f"{app_name}_ref.json")
-                with open(ref_file_path, 'w', encoding='utf-8') as f:
-                    json.dump(ref_json, f, indent=2, ensure_ascii=False)
-                print(f"  Created: {app_name}_ref.json")
+                })
+
+    # =====================
+    # GHI 2 FILE MASTER RA Ổ CỨNG
+    # =====================
+    # Format lại timestamp để dùng làm tên file (bỏ dấu : để Windows không báo lỗi)
+    safe_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if master_dut["apps_data"]:
+        dut_file_path = os.path.join(output_dir, f"DUT_all_apps_{safe_time}.json")
+        with open(dut_file_path, 'w', encoding='utf-8') as f:
+            json.dump(master_dut, f, indent=2, ensure_ascii=False)
+        print(f"  -> Created Consolidated DUT JSON: {os.path.basename(dut_file_path)}")
+
+    if master_ref["apps_data"]:
+        ref_file_path = os.path.join(output_dir, f"REF_all_apps_{safe_time}.json")
+        with open(ref_file_path, 'w', encoding='utf-8') as f:
+            json.dump(master_ref, f, indent=2, ensure_ascii=False)
+        print(f"  -> Created Consolidated REF JSON: {os.path.basename(ref_file_path)}")
+
 
 
 
@@ -2789,74 +2833,6 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
     else:
         # Lọc lại chỉ lấy data của các app nằm trong current_targets
         return {app: data for app, data in merged_data.items() if app in current_targets}
-
-
-# def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], extracted: bool):
-#     """
-#     Xử lý quét Trace với Smart Cache (Target-App Aware & Subset-Aware).
-#     Có thể trích xuất data nếu user chỉ yêu cầu một phần của Cache.
-#     """
-#     cache_path = os.path.join(folder_path, ".perf_cache.pkl")
-    
-#     # Chuẩn hóa target_apps hiện tại
-#     current_targets = sorted(target_apps) if target_apps else None
-    
-#     if os.path.exists(cache_path):
-#         print(f"  -> [{label}] Found cache file: {cache_path}")
-#         try:
-#             with open(cache_path, 'rb') as f:
-#                 cache_content = pickle.load(f)
-            
-#             if isinstance(cache_content, dict) and "target_apps" in cache_content and "data" in cache_content:
-#                 cached_targets = cache_content["target_apps"]
-#                 cached_data = cache_content["data"]
-                
-#                 # CASE 1: Giống hệt nhau (Khớp 100%)
-#                 if current_targets == cached_targets and cache_content.get("version") == CACHE_VERSION:
-#                     print(f"  -> [{label}] Target apps exactly matched! Loading from cache ...")
-#                     return cached_data
-                
-#                 # CASE 2: Yêu cầu hiện tại là TẬP CON của Cache (Ví dụ: Cache có ALL, user chỉ cần Gallery)
-#                 elif current_targets is not None and cache_content.get("version") == CACHE_VERSION:
-#                     # Nếu Cache lưu ALL (None), hoặc Cache chứa đủ các app đang yêu cầu
-#                     if cached_targets is None or set(current_targets).issubset(set(cached_targets)):
-#                         print(f"  -> [{label}] Requested apps {current_targets} are available in Cache!")
-#                         print(f"  -> [{label}] Extracting subset from cache ...")
-                        
-#                         # Trích xuất riêng data của những app được yêu cầu
-#                         subset_data = {
-#                             app: data for app, data in cached_data.items() 
-#                             if app in current_targets
-#                         }
-#                         return subset_data
-                
-#                 # CASE 3: Yêu cầu thêm App mới mà Cache chưa có (VD: Cache có Gallery, user đòi thêm Camera)
-#                 print(f"  -> [{label}] Target apps missing in cache! (Old: {cached_targets}, Requested: {current_targets})")
-#                 print(f"  -> [{label}] Cache invalidated. Processing from scratch...")
-#             else:
-#                 print(f"  -> [{label}] Old cache format detected. Invalidating...")
-                
-#         except Exception as e:
-#             print(f"  -> [{label}] [ERROR] Failed to read cache: {e}. Processing from scratch...")
-            
-#     # CHẠY QUÉT TỪ ĐẦU (Nếu không có cache hoặc cache không đủ data)
-#     print(f"  -> [{label}] Processing trace files...")
-#     results = process_all_traces(folder_path, label, num_workers, target_apps, extracted)
-    
-#     # LƯU CACHE
-#     try:
-#         cache_content_to_save = {
-#             "version": CACHE_VERSION,
-#             "target_apps": current_targets,
-#             "data": results
-#         }
-#         with open(cache_path, 'wb') as f:
-#             pickle.dump(cache_content_to_save, f)
-#         print(f"  -> [{label}] Saved data & app filter to cache: {cache_path}")
-#     except Exception as e:
-#         print(f"  -> [{label}] [WARN] Could not save cache: {e}")
-        
-#     return results
 
 
 def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None, extracted: bool = False) -> None:
@@ -2965,49 +2941,72 @@ if __name__ == "__main__":
 
 # Export json v2
 '''
-        # ========================
-        # 1. SEQUENCE METRICS (AVG)
-        # ========================
-        sequence_metrics = [
-            "App Execution Time", "Touch Down ~ Start Proc", "Start Proc",
-            "Start Proc ~ ActivityThreadMain", "Activity Thread Main",
-            "ActivityThreadMain ~ bindApplication", "Bind Application",
-            "bindApplication ~ activityStart", "Touch Duration", "Touch Up ~ Activity Start",
-            "Activity Start", "activityStart ~ activityResume", "Activity Resume",
-            "ActivityResume ~ Choreographer", "Choreographer",
-            "Choreographer ~ ActivityIdle", "ActivityIdle", "ActivityIdle ~ Animating end",
-            "Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
-            "onCreate", "OpenCameraRequest", "onResume", "StartPreviewRequest"
-        ]
+# =====================
+    # BUILD & WRITE PER-APP JSON FILES
+    # =====================
+    timestamp = datetime.datetime.now().isoformat()
+    
+    # Lấy danh sách tất cả apps từ cả DUT và REF
+    all_apps = set(dut_results.keys()) | set(ref_results.keys())
+    
+    # Tạo output directory
+    output_dir = os.path.join(output_folder, "Output")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"\n Exporting per-app JSON files...")
+    
+    # Export từng app cho DUT và REF
+    for app_name in sorted(all_apps):
+        # =====================
+        # DUT - Chỉ lấy entry
+        # =====================
+        dut_entry_cycles = dut_results.get(app_name, {}).get("entry", [])
+        ref_entry_cycles = ref_results.get(app_name, {}).get("entry", []) # Lấy sẵn ref cycles
         
-        # [NEW] Định nghĩa lại keys để mask giống hệt Excel
-        COLD_ONLY_KEYS = {
-            "Touch Down ~ Start Proc", "Start Proc", "Start Proc ~ ActivityThreadMain",
-            "Activity Thread Main", "ActivityThreadMain ~ bindApplication",
-            "Bind Application", "bindApplication ~ activityStart"
-        }
-        WARM_ONLY_KEYS = {
-            "Touch Duration", "Touch Up ~ Activity Start"
-        }
+        if dut_entry_cycles:
+            # [CẬP NHẬT 2] Truyền compare_cycles=ref_entry_cycles và is_dut=True
+            dut_metrics = calculate_metrics_for_app(
+                dut_entry_cycles, app_name, "entry", dut_folder_path, 
+                compare_cycles=ref_entry_cycles, is_dut=True
+            )
+            if dut_metrics:
+                # Flatten structure: device_code, timestamp, type, app, entry
+                dut_json = {
+                    "device_code": dut_device_code,
+                    "timestamp": timestamp,
+                    "type": "DUT",
+                    "app": app_name,
+                    "entry": dut_metrics
+                }
+                
+                # Write to file: app_name_dut.json
+                dut_file_path = os.path.join(output_dir, f"{app_name}_dut.json")
+                with open(dut_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(dut_json, f, indent=2, ensure_ascii=False)
+                print(f"  Created: {app_name}_dut.json")
         
-        sequence_data = {}
-        for metric in sequence_metrics:
-            values = []
-            for cycle in valid_cycles:
-                # [NEW] Masking Logic: Bỏ qua metric nếu không đúng loại Launch Type
-                # c_type = cycle.get("Launch Type")
-                c_type = "Cold" if launch_type == "entry" else "Warm"
-                if c_type == "Cold" and metric in WARM_ONLY_KEYS:
-                    continue  # Bỏ qua Touch Duration cho cycle Cold
-                if c_type == "Warm" and metric in COLD_ONLY_KEYS:
-                    continue  # Bỏ qua Start Proc... cho cycle Warm
+        # =====================
+        # REF - Chỉ lấy entry
+        # =====================
+        if ref_entry_cycles:
+            # [CẬP NHẬT 2] Truyền compare_cycles=dut_entry_cycles và is_dut=False
+            ref_metrics = calculate_metrics_for_app(
+                ref_entry_cycles, app_name, "entry", ref_folder_path, 
+                compare_cycles=dut_entry_cycles, is_dut=False
+            )
+            if ref_metrics:
+                # Flatten structure
+                ref_json = {
+                    "device_code": ref_device_code,
+                    "timestamp": timestamp,
+                    "type": "REF",
+                    "app": app_name,
+                    "entry": ref_metrics
+                }
                 
-                val = cycle.get(metric, 0.0)
-                if val and val > 0: 
-                    values.append(float(val))
-                    
-            if values: 
-                sequence_data[metric] = round(sum(values) / len(values), 3)
-                
-        if sequence_data: result["sequence"] = sequence_data
+                # Write to file: app_name_ref.json
+                ref_file_path = os.path.join(output_dir, f"{app_name}_ref.json")
+                with open(ref_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(ref_json, f, indent=2, ensure_ascii=False)
+                print(f"  Created: {app_name}_ref.json")
 '''
