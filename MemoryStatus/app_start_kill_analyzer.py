@@ -95,6 +95,26 @@ class AppStartKillAnalyzer:
         Returns:
             AppStartKillInfo: Information about app start/kill events
         """
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            return self.analyze_content(content, target_app)
+        except (IOError, OSError) as e:
+            print(f"Error reading file {file_path}: {e}")
+            return AppStartKillInfo(app_name=target_app)
+
+    def analyze_content(self, content: str, target_app: str) -> AppStartKillInfo:
+        """
+        [OPTIMIZED] Analyze dumpstate content string for app start/kill events.
+        Same logic as analyze_file but works with in-memory content.
+        
+        Args:
+            content: Dumpstate file content as string
+            target_app: Target app name to analyze
+            
+        Returns:
+            AppStartKillInfo: Information about app start/kill events
+        """
         # Get package name for the target app
         target_package = APP_PACKAGE_MAPPING.get(target_app)
         if not target_package:
@@ -106,41 +126,36 @@ class AppStartKillAnalyzer:
         # Track if we've found the first app transition
         found_first_transition = False
         
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    # Check for app transition (first occurrence for target app)
-                    if not found_first_transition:
-                        transition_match = APP_TRANSITION_PATTERN.search(line)
-                        if transition_match and transition_match.group(1) == target_package:
-                            found_first_transition = True
-                            # Stop processing after finding the first transition
-                            break
-                    
-                    # Check for process start events
-                    start_match = PROC_START_PATTERN.search(line)
-                    if start_match:
-                        package_name, start_reason = start_match.groups()
-                        # Skip counting if start reason is 'activelaunch'
-                        if package_name == target_package and start_reason != 'activelaunch':
-                            app_info.start_count += 1
-                            app_info.start_reasons.append(start_reason)
-                    
-                    # Check for kill events
-                    kill_match = KILL_PATTERN.search(line)
-                    if kill_match:
-                        kill_reason = kill_match.group(1)
-                        # Extract package name from the kill log (it's the 3rd field)
-                        package_match = re.search(r"I am_kill : \[[^,]*,[^,]*,([^,]+),", line)
-                        if package_match:
-                            package_name = package_match.group(1)
-                            if package_name == target_package:
-                                app_info.kill_count += 1
-                                app_info.kill_reasons.append(kill_reason)
-                            
-        except (IOError, OSError) as e:
-            print(f"Error reading file {file_path}: {e}")
+        for line in content.splitlines():
+            # Check for app transition (first occurrence for target app)
+            if not found_first_transition:
+                transition_match = APP_TRANSITION_PATTERN.search(line)
+                if transition_match and transition_match.group(1) == target_package:
+                    found_first_transition = True
+                    # Stop processing after finding the first transition
+                    break
             
+            # Check for process start events
+            start_match = PROC_START_PATTERN.search(line)
+            if start_match:
+                package_name, start_reason = start_match.groups()
+                # Skip counting if start reason is 'activelaunch'
+                if package_name == target_package and start_reason != 'activelaunch':
+                    app_info.start_count += 1
+                    app_info.start_reasons.append(start_reason)
+            
+            # Check for kill events
+            kill_match = KILL_PATTERN.search(line)
+            if kill_match:
+                kill_reason = kill_match.group(1)
+                # Extract package name from the kill log (it's the 3rd field)
+                package_match = re.search(r"I am_kill : \[[^,]*,[^,]*,([^,]+),", line)
+                if package_match:
+                    package_name = package_match.group(1)
+                    if package_name == target_package:
+                        app_info.kill_count += 1
+                        app_info.kill_reasons.append(kill_reason)
+                    
         return app_info
     
     def analyze_folder(self, folder_path: Path, part_name: str) -> List[AppStartKillInfo]:

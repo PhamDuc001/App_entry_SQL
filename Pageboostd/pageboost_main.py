@@ -29,20 +29,29 @@ APP_MAPPING = {
 }
 
 
-def extract_largest_file_from_zip(zip_path, extract_dir):
-    """Decompress and return biggest file .txt"""
-    with zipfile.ZipFile(zip_path, 'r') as z:
-        infos = z.infolist()
-        if not infos:
-            return None
-        largest = max(infos, key=lambda x: x.file_size)
-        out_path = os.path.join(extract_dir, largest.filename.replace("/", "_"))
-        with open(out_path, "wb") as f:
-            f.write(z.read(largest))
-        return out_path
+def parse_pageboostd_from_zip(zip_path):
+    """[OPTIMIZED] Stream parse pageboostd data trực tiếp từ zip, KHÔNG extract ra disk."""
+    results = {}
+    pattern = re.compile(r"app\s+(\S+)\s+data_amount\s+(\d+)")
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            infos = [i for i in z.infolist() if not i.is_dir()]
+            if not infos:
+                return results
+            largest = max(infos, key=lambda x: x.file_size)
+            with z.open(largest) as f:
+                for raw_line in f:
+                    line = raw_line.decode('utf-8', errors='ignore')
+                    m = pattern.search(line)
+                    if m:
+                        results[m.group(1)] = int(m.group(2))
+    except Exception as e:
+        print(f"[Error] Cannot read zip {zip_path}: {e}")
+    return results
 
 
 def parse_pageboostd(file_path):
+    """Parse pageboostd from an already-extracted file (backward compat)."""
     results = {}
     pattern = re.compile(r"app\s+(\S+)\s+data_amount\s+(\d+)")
     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -56,9 +65,8 @@ def parse_pageboostd(file_path):
 
 
 def collect_cycles_from_zips(folder):
-    # Collect cycles by extracting from all zip files
+    """[OPTIMIZED] Collect cycles by streaming directly from zip — NO disk extraction."""
     cycles = []  # list[dict], mỗi dict: {app: value}
-    os.makedirs(os.path.join(folder, "_tmp"), exist_ok=True)
 
     for fname in sorted(os.listdir(folder)):
         if not fname.lower().endswith(".zip"):
@@ -67,11 +75,8 @@ def collect_cycles_from_zips(folder):
         if not os.path.isfile(fpath):
             continue
 
-        # extract & parse
-        dump_path = extract_largest_file_from_zip(fpath, os.path.join(folder, "_tmp"))
-        if not dump_path:
-            continue
-        data = parse_pageboostd(dump_path)
+        # [OPTIMIZED] Stream parse trực tiếp từ zip — không extract ra disk
+        data = parse_pageboostd_from_zip(fpath)
 
         for app, val in data.items():
             placed = False
@@ -82,7 +87,6 @@ def collect_cycles_from_zips(folder):
                     break
             if not placed:
                 cycles.append({app: val})
-    #print(cycles)
     return cycles
 
 
@@ -252,17 +256,7 @@ def diff_pageboostd(folder1, folder2, extracted=False):
     write_excel(out_path, prefix1, prefix2, cycles1, cycles2)
     print(f"Excel created: {out_path}")
 
-    # --- ĐOẠN CODE MỚI THÊM VÀO ---
-    # Xóa folder _tmp và toàn bộ nội dung bên trong
-    for folder in [folder1, folder2]:
-        tmp_path = os.path.join(folder, "_tmp")
-        if os.path.exists(tmp_path):
-            try:
-                shutil.rmtree(tmp_path)
-                print(f"Cleaned up temporary folder: {tmp_path}")
-            except OSError as e:
-                print(f"Error removing {tmp_path}: {e}")
-    # ------------------------------
+    # [OPTIMIZED] Không còn tạo _tmp, không cần cleanup
 
 
 

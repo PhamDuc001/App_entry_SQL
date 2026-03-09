@@ -215,43 +215,59 @@ class Device:
     
     def analyze(self, extracted: bool = False) -> AnalysisResult:
         """Perform comprehensive analysis of this device"""
-        # Find the largest dumpstate file to determine RAM size and debug level
-        dumpstate_file = None
-        largest_size = 0
-        
-        if self.folder_path.exists():
-            for dirpath, dirnames, filenames in os.walk(self.folder_path):
-                for filename in filenames:
-                    if filename.startswith('dumpstate-') and filename.endswith('.txt'):
-                        file_path = os.path.join(dirpath, filename)
-                        try:
-                            file_size = os.path.getsize(file_path)
-                            if file_size > largest_size:
-                                largest_size = file_size
-                                dumpstate_file = file_path
-                        except Exception as e:
-                            print(f"Error getting size for file {file_path}: {e}")
-        
-        # Set RAM size and debug level for this device
-        if dumpstate_file:
-            try:
-                with open(dumpstate_file, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
-                # Import the functions here to avoid circular imports
-                try: 
-                    from .analyze_pss import get_ram_size, get_debug_level
-                    # Read the entire file to detect RAM size and debug level
-                except ImportError:
-                    from analyze_pss import get_ram_size, get_debug_level
-                ram_size = get_ram_size(content)
-                debug_level = get_debug_level(content)
-                self.set_ram_size(ram_size)
-                self.set_debug_level(debug_level)
-                print(f"{self.name} RAM size: {ram_size}GB, Debug level: {debug_level}")
-            except Exception as e:
-                print(f"Error reading dumpstate file for {self.name} RAM size and debug level detection: {e}")
-        
         analyzer = DevicePerformanceAnalyzer(self.config)
+        
+        # [OPTIMIZED] Detect RAM size and debug level from zip directly (no disk extraction)
+        if not extracted and self.folder_path.exists():
+            zip_files = sorted(self.folder_path.glob("*.zip"))
+            if zip_files:
+                # Read first zip to detect RAM/debug level
+                content = analyzer.read_content_from_zip(zip_files[0])
+                if content:
+                    try:
+                        try: 
+                            from .analyze_pss import get_ram_size, get_debug_level
+                        except ImportError:
+                            from analyze_pss import get_ram_size, get_debug_level
+                        ram_size = get_ram_size(content)
+                        debug_level = get_debug_level(content)
+                        self.set_ram_size(ram_size)
+                        self.set_debug_level(debug_level)
+                        print(f"{self.name} RAM size: {ram_size}GB, Debug level: {debug_level}")
+                    except Exception as e:
+                        print(f"Error detecting RAM/debug for {self.name}: {e}")
+        else:
+            # Extracted mode: find .txt file on disk
+            dumpstate_file = None
+            largest_size = 0
+            if self.folder_path.exists():
+                for dirpath, dirnames, filenames in os.walk(self.folder_path):
+                    for filename in filenames:
+                        if filename.startswith('dumpstate-') and filename.endswith('.txt'):
+                            file_path = os.path.join(dirpath, filename)
+                            try:
+                                file_size = os.path.getsize(file_path)
+                                if file_size > largest_size:
+                                    largest_size = file_size
+                                    dumpstate_file = file_path
+                            except Exception as e:
+                                print(f"Error getting size for file {file_path}: {e}")
+            if dumpstate_file:
+                try:
+                    with open(dumpstate_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    try: 
+                        from .analyze_pss import get_ram_size, get_debug_level
+                    except ImportError:
+                        from analyze_pss import get_ram_size, get_debug_level
+                    ram_size = get_ram_size(content)
+                    debug_level = get_debug_level(content)
+                    self.set_ram_size(ram_size)
+                    self.set_debug_level(debug_level)
+                    print(f"{self.name} RAM size: {ram_size}GB, Debug level: {debug_level}")
+                except Exception as e:
+                    print(f"Error reading dumpstate file for {self.name}: {e}")
+        
         self.analysis_result = analyzer.analyze_folder(self.folder_path, extracted)
         
         return self.analysis_result
@@ -427,154 +443,133 @@ class DevicePerformanceAnalyzer:
         self.config = config or Config()
     
     
-    def extract_largest_file_from_zip(self, zip_path: Path, extract_dir: Path) -> Optional[Path]:
-        """Extract largest file from zip with intelligent caching"""
-        extract_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate cache filename
-        zip_mtime = zip_path.stat().st_mtime
-        cache_filename = f"{zip_path.stem}_{int(zip_mtime)}.txt"
-        cache_path = extract_dir / cache_filename
-        
-        # Return cached file if exists
-        if cache_path.exists():
-            return cache_path
-        
+    def read_content_from_zip(self, zip_path: Path) -> Optional[str]:
+        """[OPTIMIZED] Read largest file from zip directly into RAM — NO disk extraction."""
         try:
             with zipfile.ZipFile(zip_path, 'r') as z:
-                infos = z.infolist()
+                infos = [i for i in z.infolist() if not i.is_dir()]
                 if not infos:
                     return None
-                
                 largest = max(infos, key=lambda x: x.file_size)
-                
-                # Extract to cache location
-                with open(cache_path, "wb") as f:
-                    f.write(z.read(largest))
-                
-                return cache_path
-                
+                content_bytes = z.read(largest)
+                try:
+                    return content_bytes.decode('utf-8', errors='ignore')
+                except Exception:
+                    return content_bytes.decode('latin-1', errors='ignore')
         except (zipfile.BadZipFile, OSError) as e:
-            print(f"Error extracting {zip_path}: {e}")
+            print(f"Error reading zip {zip_path}: {e}")
             return None
     
+    def _read_content_for_path(self, file_path: Path) -> Optional[str]:
+        """[OPTIMIZED] Read content from either a .zip or .txt file path transparently."""
+        file_path = Path(file_path)
+        if file_path.suffix.lower() == '.zip':
+            return self.read_content_from_zip(file_path)
+        else:
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    return f.read()
+            except (IOError, OSError) as e:
+                print(f"Error reading file {file_path}: {e}")
+                return None
+    
     def parse_file_content(self, file_path: Path) -> Tuple[
+        Tuple[Optional[int], str, str],
+        List[Tuple[str, float]],
+        List[Tuple[str, float]],
+        List[CrashData]
+    ]:
+        """Parse from file path (backward compat for extracted mode)."""
+        try:
+            with open(file_path, "r", encoding="utf-8",
+                     errors="ignore", buffering=self.config.FILE_BUFFER_SIZE) as f:
+                content = f.read()
+            return self.parse_content(content, file_path.name if hasattr(file_path, 'name') else str(file_path))
+        except (IOError, OSError) as e:
+            print(f"Error reading file {file_path}: {e}")
+            return (
+                (None, self.config.STATUS_NG, f"Error reading file: {e}"),
+                [], [], []
+            )
+    
+    def parse_content(self, content: str, filename: str) -> Tuple[
         Tuple[Optional[int], str, str],  # uptime data
         List[Tuple[str, float]],         # io read data
         List[Tuple[str, float]],         # io write data
         List[CrashData]                  # crash data
     ]:
-        """Parse all required information from log file in a single pass"""
-        # Initialize return values
+        """[OPTIMIZED] Parse all required information from content string in a single pass"""
         uptime_data = (None, self.config.STATUS_NG, "No uptime line found")
-        process_reads = defaultdict(int)  # For I/O read data
-        process_writes = defaultdict(int)  # For I/O write data
+        process_reads = defaultdict(int)
+        process_writes = defaultdict(int)
         crashes = []
         
-        try:
-
-            with open(file_path, "r", encoding="utf-8", 
-                     errors="ignore", buffering=self.config.FILE_BUFFER_SIZE) as f:
-                for line in f:
-                    # Check for uptime
-                    if uptime_data[0] is None:  # Only search until we find uptime
-                        uptime_match = UPTIME_PATTERN.search(line)
-                        if uptime_match:
-                            uptime_str = uptime_match.group(1)
-                            uptime_minutes = self._convert_uptime_to_minutes(uptime_str)
-                            status = (self.config.STATUS_NG 
-                                    if uptime_minutes > self.config.UPTIME_THRESHOLD_MINUTES 
-                                    else self.config.STATUS_OK)
-                            uptime_data = (uptime_minutes, status, line.strip())
-                    
-                    # Check for I/O lines (Read_top or Write_top)
-                    io_match = IO_PATTERN.search(line)
-                    if io_match:
-                        io_type = io_match.group(1)
-                        processes_info = io_match.group(2).strip()
-                        # Split by spaces to get process name and value pairs
-                        parts = processes_info.split()
-                        
-                        # Process the pairs more efficiently
-                        i = 0
-                        target_dict = process_reads if io_type == "Read_top" else process_writes
-                        while i < len(parts) - 1:  # -1 because we need to check i+1
-                            # Check if this is a process entry
-                            if '(' in parts[i] and ')' in parts[i]:
-                                try:
-                                    # Get process name (before the PID in parentheses)
-                                    process_name = parts[i].split('(')[0]
-                                    # Get value (next part)
-                                    value = int(parts[i + 1])
-                                    # Add to the appropriate process total
-                                    target_dict[process_name] += value
-                                    i += 2  # Move to next pair
-                                except ValueError:
-                                    # Skip if we can't parse the value
-                                    i += 1
-                            else:
-                                i += 1
-                    
-                    # Check for ANR
-                    anr_match = ANR_PATTERN.search(line)
-                    if anr_match:
-                        app_name = anr_match.group(1).strip()
-                        pid = anr_match.group(2) if len(anr_match.groups()) > 1 else None
-                        crashes.append(CrashData(
-                            filename=file_path.name,
-                            crash_type="ANR",
-                            app_name=app_name,
-                            pid=pid,
-                            raw_line=line.strip()
-                        ))
-                    
-                    # Check for FATAL EXCEPTION
-                    fatal_match = FATAL_PATTERN.search(line)
-                    if fatal_match:
-                        app_name = fatal_match.group(1).strip()
-                        pid = fatal_match.group(2) if len(fatal_match.groups()) > 1 else None
-                        crashes.append(CrashData(
-                            filename=file_path.name,
-                            crash_type="FATAL",
-                            app_name=app_name,
-                            pid=pid,
-                            raw_line=line.strip()
-                        ))
+        for line in content.splitlines():
+            # Check for uptime
+            if uptime_data[0] is None:
+                uptime_match = UPTIME_PATTERN.search(line)
+                if uptime_match:
+                    uptime_str = uptime_match.group(1)
+                    uptime_minutes = self._convert_uptime_to_minutes(uptime_str)
+                    status = (self.config.STATUS_NG 
+                            if uptime_minutes > self.config.UPTIME_THRESHOLD_MINUTES 
+                            else self.config.STATUS_OK)
+                    uptime_data = (uptime_minutes, status, line.strip())
+            
+            # Check for I/O lines
+            io_match = IO_PATTERN.search(line)
+            if io_match:
+                io_type = io_match.group(1)
+                processes_info = io_match.group(2).strip()
+                parts = processes_info.split()
+                i = 0
+                target_dict = process_reads if io_type == "Read_top" else process_writes
+                while i < len(parts) - 1:
+                    if '(' in parts[i] and ')' in parts[i]:
+                        try:
+                            process_name = parts[i].split('(')[0]
+                            value = int(parts[i + 1])
+                            target_dict[process_name] += value
+                            i += 2
+                        except ValueError:
+                            i += 1
+                    else:
+                        i += 1
+            
+            # Check for ANR
+            anr_match = ANR_PATTERN.search(line)
+            if anr_match:
+                app_name = anr_match.group(1).strip()
+                pid = anr_match.group(2) if len(anr_match.groups()) > 1 else None
+                crashes.append(CrashData(
+                    filename=filename,
+                    crash_type="ANR",
+                    app_name=app_name,
+                    pid=pid,
+                    raw_line=line.strip()
+                ))
+            
+            # Check for FATAL EXCEPTION
+            fatal_match = FATAL_PATTERN.search(line)
+            if fatal_match:
+                app_name = fatal_match.group(1).strip()
+                pid = fatal_match.group(2) if len(fatal_match.groups()) > 1 else None
+                crashes.append(CrashData(
+                    filename=filename,
+                    crash_type="FATAL",
+                    app_name=app_name,
+                    pid=pid,
+                    raw_line=line.strip()
+                ))
         
-        except (IOError, OSError) as e:
-            print(f"Error reading file {file_path}: {e}")
-            return (
-                (None, self.config.STATUS_NG, f"Error reading file: {e}"),
-                [],
-                [],
-                crashes
-            )
-        
-        # Convert I/O read data to MB and get top 10
-        # Since we only show top 10 in the report, we don't need to sort all entries
-        # Use heapq.nlargest for better performance
+        # Convert I/O data to MB and get top 10
         import heapq
-        process_reads_mb = []
-        for process, read_kb in process_reads.items():
-            read_mb = read_kb / 1024.0
-            process_reads_mb.append((read_mb, process))
-        
-        # Get top 10 processes by read MB
+        process_reads_mb = [(read_kb / 1024.0, process) for process, read_kb in process_reads.items()]
         top_10_reads = heapq.nlargest(10, process_reads_mb, key=lambda x: x[0])
-        # Convert read_mb to integer to avoid decimal places in the report
         process_reads_mb = [(process, int(read_mb)) for read_mb, process in top_10_reads]
         
-        # Convert I/O write data to MB and get top 10
-        # Since we only show top 10 in the report, we don't need to sort all entries
-        # Use heapq.nlargest for better performance
-        process_writes_mb = []
-        for process, write_kb in process_writes.items():
-            write_mb = write_kb / 1024.0
-            process_writes_mb.append((write_mb, process))
-        
-        # Get top 10 processes by write MB
+        process_writes_mb = [(write_kb / 1024.0, process) for process, write_kb in process_writes.items()]
         top_10_writes = heapq.nlargest(10, process_writes_mb, key=lambda x: x[0])
-        # Convert write_mb to integer to avoid decimal places in the report
         process_writes_mb = [(process, int(write_mb)) for write_mb, process in top_10_writes]
         
         return uptime_data, process_reads_mb, process_writes_mb, crashes
@@ -600,53 +595,26 @@ class DevicePerformanceAnalyzer:
         
         return total_minutes
     
-    def extract_all_zips(self, folder: Path) -> Dict[Path, Path]:
-        """Extract all zip files first and return mapping of zip files to extracted file paths"""
-        cache_dir = folder / "_tmp"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        zip_files = [f for f in folder.glob("*.zip") if f.is_file()]
-        zip_to_extracted = {}
-        
-        # Use threading to extract files in parallel
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            # Submit all extraction tasks
-            future_to_zip = {
-                executor.submit(self.extract_largest_file_from_zip, zip_file, cache_dir): zip_file 
-                for zip_file in sorted(zip_files)
-            }
-            
-            # Collect results as they complete
-            for future in as_completed(future_to_zip):
-                zip_file = future_to_zip[future]
-                try:
-                    dump_path = future.result()
-                    if dump_path:
-                        zip_to_extracted[zip_file] = dump_path
-                except Exception as e:
-                    print(f"Error extracting {zip_file}: {e}")
-        
-        return zip_to_extracted
-    
     def collect_all_data_from_zips(self, folder: Path) -> Tuple[List[UptimeData], List[CrashData], List[AppStartKillInfo]]:
-        """Collect all data (uptime, crashes, and app start/kill) from zip files in a single pass per file"""
+        """[OPTIMIZED] Collect all data by reading zip→RAM directly. NO disk extraction."""
         uptime_data = []
         crash_data = []
         app_start_kill_data = []
+        dumpstate_contents = {}  # Store content for compiler analysis later
         
-        # Extract all zip files first
-        zip_to_extracted = self.extract_all_zips(folder)
-        
-        # Initialize app analyzer
         app_analyzer = AppStartKillAnalyzer()
+        zip_files = sorted([f for f in folder.glob("*.zip") if f.is_file()])
         
-        # Then process all extracted files
-        for zip_file, dump_path in zip_to_extracted.items():
-            # Parse all content in a single pass directly
-            uptime_result, io_read_data, io_write_data, file_crash_data = self.parse_file_content(dump_path)
+        for zip_file in zip_files:
+            # [OPTIMIZED] Read zip content directly into RAM — NO disk extraction
+            content = self.read_content_from_zip(zip_file)
+            if not content:
+                continue
+            
+            # Parse uptime/IO/crash from content string
+            uptime_result, io_read_data, io_write_data, file_crash_data = self.parse_content(content, zip_file.name)
             uptime_minutes, status, raw_line = uptime_result
             
-            # Extract part name from zip file name
             part_name = self._extract_part_name(zip_file.name)
             
             uptime_data.append(UptimeData(
@@ -654,7 +622,7 @@ class DevicePerformanceAnalyzer:
                 uptime_minutes=uptime_minutes,
                 status=status,
                 raw_line=raw_line,
-                extracted_file_path=dump_path,
+                extracted_file_path=zip_file,  # Store zip path for reference
                 io_read_data=io_read_data,
                 io_write_data=io_write_data,
                 part_name=part_name
@@ -662,34 +630,39 @@ class DevicePerformanceAnalyzer:
             
             crash_data.extend(file_crash_data)
             
-            # Process app start/kill data from dumpstate file
+            # Store first content for compiler analysis
+            if not dumpstate_contents:
+                dumpstate_contents[zip_file] = content
+            
+            # Process app start/kill data from content string
             if part_name:
                 print(f"Processing app start/kill data for part: {part_name} from {zip_file.name}")
                 
-                # Get all apps for this part
                 target_apps = []
                 for app, part_num in FOLDER_APP_PART_MAPPING.items():
                     if f"{part_num}part" == part_name:
                         target_apps.append(app)
                 
-                # Special handling for 2part to include calllog, dial, clock
                 if part_name == "2part":
                     additional_apps = ["calllog", "dial", "clock"]
                     for app in additional_apps:
                         if app not in target_apps:
                             target_apps.append(app)
                 
-                # print(f"Target apps for {part_name}: {target_apps}")
-                
-                # Analyze each app from the dumpstate file
+                # [OPTIMIZED] Use analyze_content() instead of analyze_file()
                 for target_app in target_apps:
                     try:
-                        app_info = app_analyzer.analyze_file(dump_path, target_app)
-                        app_info.folder_name = zip_file.stem  # Use zip file name as folder identifier
+                        app_info = app_analyzer.analyze_content(content, target_app)
+                        app_info.folder_name = zip_file.stem
                         app_start_kill_data.append(app_info)
-                        # print(f"  {target_app}: start={app_info.start_count}, kill={app_info.kill_count}")
                     except Exception as e:
                         print(f"Error analyzing {target_app} in {zip_file.name}: {e}")
+            
+            # Release content after processing (help GC)
+            del content
+        
+        # Store dumpstate contents for compiler extraction later
+        self._dumpstate_contents_cache = dumpstate_contents
         
         print(f"Total app start/kill records collected: {len(app_start_kill_data)}")
         return uptime_data, crash_data, app_start_kill_data
@@ -916,8 +889,12 @@ class DevicePerformanceAnalyzer:
             if item.extracted_file_path:
                 dumpstate_file_paths[item.extracted_file_path] = item.extracted_file_path
         
-        # OPTIMIZATION: Extract compiler info on-demand without storing full contents
-        compiler_data = self._extract_compiler_info_on_demand(dumpstate_file_paths)
+        # [OPTIMIZED] Use cached content from collect_all_data_from_zips if available
+        if hasattr(self, '_dumpstate_contents_cache') and self._dumpstate_contents_cache:
+            compiler_data = self._extract_compiler_info_from_content(self._dumpstate_contents_cache)
+            self._dumpstate_contents_cache = {}  # Free memory
+        else:
+            compiler_data = self._extract_compiler_info_on_demand(dumpstate_file_paths)
         
         ok_count = sum(1 for item in original_uptime_data if item.status == self.config.STATUS_OK)
         ng_count = sum(1 for item in original_uptime_data if item.status == self.config.STATUS_NG)
@@ -1514,6 +1491,68 @@ class DevicePerformanceAnalyzer:
         
         return compiler_data
     
+    def _extract_compiler_info_from_content(self, dumpstate_contents: Dict[Path, str]) -> Dict[str, str]:
+        """[OPTIMIZED] Extract compiler info from cached content strings — NO disk I/O."""
+        compiler_data = {}
+        
+        test_apps = {
+            'camera': 'com.sec.android.app.camera',
+            'helloworld': 'com.samsung.performance.helloworld_v6',
+            'calllog': 'com.samsung.android.dialer',
+            'dial': 'com.samsung.android.dialer',
+            'clock': 'com.sec.android.app.clockpackage',
+            'contact': 'com.samsung.android.app.contacts',
+            'calendar': 'com.samsung.android.calendar',
+            'calculator': 'com.samsung.android.calendar',
+            'gallery': 'com.sec.android.gallery3d',
+            'message': 'com.samsung.android.messaging',
+            'menu': 'com.sec.android.app.launcher',
+            'myfile': 'com.sec.android.app.myfiles',
+            'sip': 'com.samsung.android.honeyboard',
+            'internet': 'com.sec.android.app.sbrowser',
+            'note': 'com.samsung.android.app.notes',
+            'setting': 'com.android.settings',
+            'voice': 'com.sec.android.app.voicenote',
+            'recent': 'com.sec.android.app.launcher'
+        }
+        
+        # Use first content
+        contents_list = list(dumpstate_contents.values())
+        if not contents_list:
+            return compiler_data
+        
+        file_content = contents_list[0]
+        
+        if "Dexopt state:" not in file_content:
+            return compiler_data
+        
+        dexopt_start = file_content.find("Dexopt state:")
+        if dexopt_start == -1:
+            return compiler_data
+        
+        compiler_stats_start = file_content.find("Compiler stats:", dexopt_start)
+        if compiler_stats_start == -1:
+            compiler_stats_start = len(file_content)
+        
+        max_section_size = 2 * 1024 * 1024
+        section_end = min(compiler_stats_start, dexopt_start + max_section_size)
+        dexopt_section = file_content[dexopt_start:section_end]
+        
+        for app_name, package_name in test_apps.items():
+            package_start = dexopt_section.find(f"[{package_name}]")
+            if package_start == -1:
+                continue
+            lines = dexopt_section[package_start:].split('\n')
+            for i in range(min(10, len(lines))):
+                line = lines[i]
+                if 'arm64:' in line and '[status=' in line:
+                    status_match = re.search(r'\[status=([^\]]+)\]', line)
+                    if status_match:
+                        compiler_data[app_name] = status_match.group(1)
+                        break
+        
+        return compiler_data
+    
     def _create_pss_analysis_sheet(self, ws, result1: AnalysisResult, result2: AnalysisResult):
         """Create PSS analysis sheet merged from separate PSS report"""
         # Setup styles
@@ -1550,11 +1589,11 @@ class DevicePerformanceAnalyzer:
             if item.extracted_file_path:
                 try:
                     print(f"Reading DUT dumpstate for RAM detection: {item.extracted_file_path}")
-                    with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
-                    ram_size = get_ram_size(content)
-                    dut_threshold = self.config.get_threshold_for_ram(ram_size)
-                    print(f"DUT RAM size: {ram_size}GB, PSS threshold: {dut_threshold}MB")
+                    content = self._read_content_for_path(item.extracted_file_path)
+                    if content:
+                        ram_size = get_ram_size(content)
+                        dut_threshold = self.config.get_threshold_for_ram(ram_size)
+                        print(f"DUT RAM size: {ram_size}GB, PSS threshold: {dut_threshold}MB")
                     break
                 except Exception as e:
                     print(f"Error reading DUT dumpstate file for RAM detection: {e}")
@@ -1565,11 +1604,11 @@ class DevicePerformanceAnalyzer:
             if item.extracted_file_path:
                 try:
                     print(f"Reading REF dumpstate for RAM detection: {item.extracted_file_path}")
-                    with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
-                    ram_size = get_ram_size(content)
-                    ref_threshold = self.config.get_threshold_for_ram(ram_size)
-                    print(f"REF RAM size: {ram_size}GB, PSS threshold: {ref_threshold}MB")
+                    content = self._read_content_for_path(item.extracted_file_path)
+                    if content:
+                        ram_size = get_ram_size(content)
+                        ref_threshold = self.config.get_threshold_for_ram(ram_size)
+                        print(f"REF RAM size: {ram_size}GB, PSS threshold: {ref_threshold}MB")
                     break
                 except Exception as e:
                     print(f"Error reading REF dumpstate file for RAM detection: {e}")
@@ -1584,8 +1623,9 @@ class DevicePerformanceAnalyzer:
             if item.extracted_file_path:
                 try:
                     print(f"Reading DUT dumpstate for PSS: {item.extracted_file_path}")
-                    with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
+                    content = self._read_content_for_path(item.extracted_file_path)
+                    if not content:
+                        continue
                     
                     # Find the PSS section
                     pss_start = content.find("Total PSS by process:")
@@ -1628,8 +1668,9 @@ class DevicePerformanceAnalyzer:
             if item.extracted_file_path:
                 try:
                     print(f"Reading REF dumpstate for PSS: {item.extracted_file_path}")
-                    with open(item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
+                    content = self._read_content_for_path(item.extracted_file_path)
+                    if not content:
+                        continue
                     
                     # Find the PSS section
                     pss_start = content.find("Total PSS by process:")
@@ -1782,8 +1823,9 @@ class DevicePerformanceAnalyzer:
                     if dut_item.extracted_file_path:
                         try:
                             print(f"Reading DUT dumpstate: {dut_item.extracted_file_path}")
-                            with open(dut_item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                                dut_content = f.read()
+                            dut_content = self._read_content_for_path(dut_item.extracted_file_path)
+                            if not dut_content:
+                                continue
                             dut_pss = extract_pss_for_package(dut_content, target_package)
                             if dut_pss > 0:
                                 dut_pss_values.append(dut_pss)
@@ -1798,8 +1840,9 @@ class DevicePerformanceAnalyzer:
                     if ref_item.extracted_file_path:
                         try:
                             print(f"Reading REF dumpstate: {ref_item.extracted_file_path}")
-                            with open(ref_item.extracted_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                                ref_content = f.read()
+                            ref_content = self._read_content_for_path(ref_item.extracted_file_path)
+                            if not ref_content:
+                                continue
                             ref_pss = extract_pss_for_package(ref_content, target_package)
                             if ref_pss > 0:
                                 ref_pss_values.append(ref_pss)
