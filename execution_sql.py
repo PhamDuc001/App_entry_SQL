@@ -146,7 +146,7 @@ APP_NAME_NORMALIZATION = {
     "recorder": "voice"
 }
 
-CACHE_VERSION = "1.0"  # Tăng lên "1.1", "2.0"... 
+CACHE_VERSION = "1.1"  # Tăng lên "1.1", "2.0"... 
 
 # CRITICAL: Set environment variables TRƯỚC KHI import bất cứ thứ gì
 os.environ['NUMPY_EXPERIMENTAL_ARRAY_FUNCTION'] = '0'
@@ -2244,7 +2244,9 @@ def export_avg_to_json(
     dut_device_code: str,
     ref_device_code: str,
     dut_folder_path: str = "",
-    ref_folder_path: str = ""
+    ref_folder_path: str = "",
+    dut_version: str = "",
+    ref_version: str = ""
 ) -> None:
     """
     Xuất metrics ra file JSON.
@@ -2633,6 +2635,7 @@ def export_avg_to_json(
     # [NEW] Khởi tạo 2 biến Master Dictionary để chứa toàn bộ data
     master_dut = {
         "device_code": dut_device_code,
+        "version": dut_version,
         "timestamp": timestamp,
         "type": "DUT",
         "apps_data": []  # List chứa data của tất cả các app
@@ -2640,6 +2643,7 @@ def export_avg_to_json(
     
     master_ref = {
         "device_code": ref_device_code,
+        "version": ref_version,
         "timestamp": timestamp,
         "type": "REF",
         "apps_data": []  # List chứa data của tất cả các app
@@ -2876,21 +2880,29 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     print("\n[2/2] Processing REF folder...")
     ref_results = get_or_process_folder_with_cache(ref_folder, "REF", num_workers, target_apps, extracted)
     
-    # Extract header title từ file đầu tiên
+    # Extract header title và version từ file đầu tiên của DUT
+    dut_version = ""
     dut_files = collect_trace_files(dut_folder)
     if dut_files:
         first_file = Path(dut_files[0]).stem
         parts = first_file.split("_")
         header_title = "_".join(parts[:2]) if len(parts) >= 2 else "Metric"
+        # [NEW] Lấy 3 ký tự cuối của cụm đầu tiên (trước dấu _)
+        if parts and len(parts[0]) >= 3:
+            dut_version = parts[0][-3:]
     else:
         header_title = "Metric"
 
-    # Extract REF header title
+    # Extract REF header title và version
+    ref_version = ""
     ref_files = collect_trace_files(ref_folder)
     if ref_files:
         first_ref_file = Path(ref_files[0]).stem
         parts = first_ref_file.split("_")
         header_title_ref = "_".join(parts[:2]) if len(parts) >= 2 else "Metric"
+        # [NEW] Lấy 3 ký tự cuối của cụm đầu tiên
+        if parts and len(parts[0]) >= 3:
+            ref_version = parts[0][-3:]
     else:
         header_title_ref = "Metric"
 
@@ -2905,7 +2917,7 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     
     # Export JSON data
     print("\n[4/4] Exporting JSON data...")
-    export_avg_to_json(dut_results, ref_results, dut_folder, dut_device_code, ref_device_code, dut_folder, ref_folder)
+    export_avg_to_json(dut_results, ref_results, dut_folder, dut_device_code, ref_device_code, dut_folder, ref_folder, dut_version, ref_version)
     
     end_time = datetime.datetime.now()
     elapsed = (end_time - start_time).total_seconds()

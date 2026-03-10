@@ -25,5 +25,182 @@
     "loadapkassets → đọc từ raw/source_file",
     "start_process_abnormal → đọc từ raw/source_file"
   ],
-  "sessions": []
+  "sessions": [
+    {
+      "session_id": "BOS_20260310",
+      "type": "DUT",
+      "device_code": "BOS",
+      "timestamp": "2026-03-10T07:51:52.669942",
+      "source_file": "raw/DUT_all_apps_20260310_075152.json",
+      "device_info": { "build": "", "chipset": "", "ram": "", "storage": "" },
+      "apps": {
+        "gallery": {
+          "entry": {
+            "State": ["Cold", "Cold", "Cold"],
+            "App_Execution_Time": 555.357,
+            "Running": 271.917,
+            "Uninterruptible_Sleep": 42.582,
+            "App_PSS_MB": 75.86,
+            "MemFree_MB": 624.28,
+            "uptime_minutes": 7.0,
+            "start_reasons": ["content provider, content provider", "content provider, content provider", "content provider"],
+            "kill_reasons": ["empty #25", "empty #30", "empty #25", "empty #29", "empty #25"],
+            "binder_duration_ms": 87.905,
+            "binder_count": 97
+          },
+          "reentry": null
+        },
+        "note": {
+          "entry": {
+            "State": ["Cold", "Cold", "Cold"],
+            "App_Execution_Time": 638.946,
+            "Running": 227.715,
+            "Uninterruptible_Sleep": 118.094,
+            "App_PSS_MB": 175.64,
+            "MemFree_MB": 523.29,
+            "uptime_minutes": 8.0,
+            "start_reasons": ["content provider", "content provider", "content provider"],
+            "kill_reasons": null,
+            "binder_duration_ms": 44.363,
+            "binder_count": 62
+          },
+          "reentry": null
+        }
+      },
+      "verdict": { "regressions": 13, "improvements": 0, "watch": [] },
+      "notes": ""
+    },
+    {
+      "session_id": "BOS_20260310",
+      "type": "REF",
+      "device_code": "BOS",
+      "timestamp": "2026-03-10T07:51:52.669942",
+      "source_file": "raw/REF_all_apps_20260310_075152.json",
+      "device_info": { "build": "", "chipset": "", "ram": "", "storage": "" },
+      "apps": {
+        "gallery": {
+          "entry": {
+            "State": ["Cold", "Cold"],
+            "App_Execution_Time": 405.897,
+            "Running": 190.282,
+            "Uninterruptible_Sleep": 34.736,
+            "App_PSS_MB": 62.31,
+            "MemFree_MB": 439.97,
+            "uptime_minutes": 7.0,
+            "start_reasons": ["broadcast, content provider", "broadcast, content provider"],
+            "kill_reasons": ["empty #25", "empty #25", "empty #25"],
+            "binder_duration_ms": 57.2,
+            "binder_count": 74
+          },
+          "reentry": null
+        },
+        "note": {
+          "entry": {
+            "State": ["Cold", "Cold"],
+            "App_Execution_Time": 476.688,
+            "Running": 147.089,
+            "Uninterruptible_Sleep": 30.687,
+            "App_PSS_MB": 143.1,
+            "MemFree_MB": 351.02,
+            "uptime_minutes": 8.0,
+            "start_reasons": ["content provider", "content provider"],
+            "kill_reasons": null,
+            "binder_duration_ms": 38.059,
+            "binder_count": 51
+          },
+          "reentry": null
+        }
+      },
+      "verdict": { "regressions": 0, "improvements": 0, "watch": [] },
+      "notes": ""
+    },
+    {
+      "session_id": "6GB_20260310",
+      "type": "DUT",
+      "device_code": "6GB",
+      "timestamp": "2026-03-10T08:40:28.171501",
+      "source_file": "raw/DUT_all_apps_20260310_084028.json",
+      "device_info": { "build": "", "chipset": "", "ram": "", "storage": "" },
+      "apps": {
+        "gallery": {
+          "entry": {
+            "State": ["Cold", "Cold", "Cold"],
+            "App_Execution_Time": 597.538,
+            "Running": 321.284,
+            "Uninterruptible_Sleep": 28.65,
+            "App_PSS_MB": 71.14,
+            "MemFree_MB": 660.36,
+            "uptime_minutes": 7.0,
+            "start_reasons": ["content provider, content provider, content provider"],
+            "kill_reasons": ["empty #25", "empty #28"],
+            "binder_duration_ms": 73.461,
+            "binder_count": 82
+          },
+          "reentry": null
+        },
+        "note": {
+          "entry": {
+            "State": ["Cold", "Cold", "Cold"],
+            "App_Execution_Time": 669.784,
+            "Running": 267.073,
+            "Uninterruptible_Sleep": 141.39,
+            "App_PSS_MB": 166.6,
+            "MemFree_MB": 611.93,
+            "uptime_minutes": 8.0,
+            "start_reasons": ["content provider", "content provider", "content provider"],
+            "kill_reasons": null,
+            "binder_duration_ms": 44.849,
+            "binder_count": 60
+          },
+          "reentry": null
+        }
+      },
+      "verdict": { "regressions": 9, "improvements": 0, "watch": [] },
+      "notes": ""
+    },
+    {
+      "session_id": "6GB_20260310",
+      "type": "REF",
+      "device_code": "BOS",
+      "timestamp": "2026-03-10T08:40:28.171501",
+      "source_file": "raw/REF_all_apps_20260310_084028.json",
+      "device_info": { "build": "", "chipset": "", "ram": "", "storage": "" },
+      "apps": {
+        "gallery": {
+          "entry": {
+            "State": ["Cold", "Cold"],
+            "App_Execution_Time": 405.897,
+            "Running": 190.282,
+            "Uninterruptible_Sleep": 34.736,
+            "App_PSS_MB": 62.31,
+            "MemFree_MB": 439.97,
+            "uptime_minutes": 7.0,
+            "start_reasons": ["broadcast, content provider", "broadcast, content provider"],
+            "kill_reasons": ["empty #25", "empty #25", "empty #25"],
+            "binder_duration_ms": 57.2,
+            "binder_count": 74
+          },
+          "reentry": null
+        },
+        "note": {
+          "entry": {
+            "State": ["Cold", "Cold"],
+            "App_Execution_Time": 476.688,
+            "Running": 147.089,
+            "Uninterruptible_Sleep": 30.687,
+            "App_PSS_MB": 143.1,
+            "MemFree_MB": 351.02,
+            "uptime_minutes": 8.0,
+            "start_reasons": ["content provider", "content provider"],
+            "kill_reasons": null,
+            "binder_duration_ms": 38.059,
+            "binder_count": 51
+          },
+          "reentry": null
+        }
+      },
+      "verdict": { "regressions": 0, "improvements": 0, "watch": [] },
+      "notes": ""
+    }
+  ]
 }

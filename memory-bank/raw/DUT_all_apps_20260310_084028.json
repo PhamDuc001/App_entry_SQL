@@ -1,0 +1,843 @@
+{
+  "device_code": "6GB",
+  "timestamp": "2026-03-10T08:40:28.171501",
+  "type": "DUT",
+  "apps_data": [
+    {
+      "app": "gallery",
+      "entry": {
+        "State": [
+          "Cold",
+          "Cold",
+          "Cold"
+        ],
+        "sequence": {
+          "App Execution Time": 597.538,
+          "Touch Down ~ Start Proc": 20.211,
+          "Start Proc": 1.59,
+          "Start Proc ~ ActivityThreadMain": 33.661,
+          "Activity Thread Main": 7.269,
+          "ActivityThreadMain ~ bindApplication": 3.475,
+          "Bind Application": 75.963,
+          "bindApplication ~ activityStart": 0.8,
+          "Activity Start": 105.847,
+          "activityStart ~ activityResume": 1.861,
+          "Activity Resume": 34.007,
+          "ActivityResume ~ Choreographer": 3.647,
+          "Choreographer": 33.911,
+          "Choreographer ~ ActivityIdle": 277.36,
+          "ActivityIdle": 0.982,
+          "Running": 321.284,
+          "Runnable": 8.926,
+          "Uninterruptible Sleep": 28.65,
+          "Sleeping": 179.602
+        },
+        "extend": {
+          "start_process_abnormal": [
+            [],
+            [],
+            []
+          ],
+          "memory": {
+            "MemFree_MB": 660.36,
+            "MemAvailable_MB": 2797.12,
+            "App_PSS_MB": 71.14,
+            "Pageboostd_MB": 22.39
+          },
+          "abnormal": {
+            "uptime_minutes": 7.0,
+            "start_reasons": [
+              "content provider, content provider, content provider"
+            ],
+            "kill_reasons": [
+              "empty #25",
+              "empty #28"
+            ],
+            "compiler": "speed-profile"
+          }
+        },
+        "top_process_consume_by_cycle": [
+          {
+            "cycle": 1,
+            "process": [
+              {
+                "name": "ndroid.systemui",
+                "dut": 558.08,
+                "ref": 189.94,
+                "diff": 368.13
+              },
+              {
+                "name": "droid.gallery3d",
+                "dut": 768.53,
+                "ref": 421.93,
+                "diff": 346.6
+              },
+              {
+                "name": "system_server",
+                "dut": 528.61,
+                "ref": 396.3,
+                "diff": 132.32
+              },
+              {
+                "name": "chbox:googleapp",
+                "dut": 122.5,
+                "ref": 3.45,
+                "diff": 119.05
+              },
+              {
+                "name": "surfaceflinger",
+                "dut": 485.7,
+                "ref": 411.22,
+                "diff": 74.47
+              }
+            ]
+          },
+          {
+            "cycle": 2,
+            "process": [
+              {
+                "name": "droid.gallery3d",
+                "dut": 790.63,
+                "ref": 0.0,
+                "diff": 0.0
+              },
+              {
+                "name": "system_server",
+                "dut": 570.32,
+                "ref": 0.0,
+                "diff": 0.0
+              },
+              {
+                "name": "surfaceflinger",
+                "dut": 446.91,
+                "ref": 0.0,
+                "diff": 0.0
+              },
+              {
+                "name": "id.app.launcher",
+                "dut": 255.08,
+                "ref": 0.0,
+                "diff": 0.0
+              },
+              {
+                "name": "ndroid.systemui",
+                "dut": 207.66,
+                "ref": 0.0,
+                "diff": 0.0
+              }
+            ]
+          },
+          {
+            "cycle": 3,
+            "process": [
+              {
+                "name": "droid.gallery3d",
+                "dut": 804.1,
+                "ref": 538.59,
+                "diff": 265.51
+              },
+              {
+                "name": "id.app.launcher",
+                "dut": 445.2,
+                "ref": 222.58,
+                "diff": 222.62
+              },
+              {
+                "name": "chbox:googleapp",
+                "dut": 88.33,
+                "ref": 3.15,
+                "diff": 85.17
+              },
+              {
+                "name": "system_server",
+                "dut": 590.38,
+                "ref": 542.0,
+                "diff": 48.38
+              },
+              {
+                "name": "roid.honeyboard",
+                "dut": 40.1,
+                "ref": 14.25,
+                "diff": 25.85
+              }
+            ]
+          }
+        ],
+        "priority_by_cycle": [
+          {
+            "cycle": 1,
+            "data": {
+              "activityStart": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ],
+              "activityResume": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          },
+          {
+            "cycle": 2,
+            "data": {
+              "bindApplication": [
+                {
+                  "priority": 120,
+                  "percentage": 100.0
+                }
+              ],
+              "activityStart": [
+                {
+                  "priority": 110,
+                  "percentage": 98.71
+                },
+                {
+                  "priority": 120,
+                  "percentage": 1.29
+                }
+              ],
+              "activityResume": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          },
+          {
+            "cycle": 3,
+            "data": {
+              "bindApplication": [
+                {
+                  "priority": 120,
+                  "percentage": 100.0
+                }
+              ],
+              "activityStart": [
+                {
+                  "priority": 110,
+                  "percentage": 97.32
+                },
+                {
+                  "priority": 120,
+                  "percentage": 2.68
+                }
+              ],
+              "activityResume": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          }
+        ],
+        "frequency_by_cycle": [
+          {
+            "cycle": 1,
+            "data": {
+              "activityStart": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "activityResume": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          },
+          {
+            "cycle": 2,
+            "data": {
+              "bindApplication": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "activityStart": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "activityResume": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          },
+          {
+            "cycle": 3,
+            "data": {
+              "bindApplication": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "activityStart": [
+                {
+                  "frequency": 2002,
+                  "percentage": 12.55
+                },
+                {
+                  "frequency": 2400,
+                  "percentage": 87.45
+                }
+              ],
+              "activityResume": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          }
+        ],
+        "block_io_by_cycle": [
+          {
+            "cycle": 1,
+            "data": [
+              {
+                "name": "/system/priv-app/SamsungGallery2018/SamsungGallery2018.apk",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.art/javalib/core-oj.jar",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/etc/icu/icudt76l.dat",
+                "val": 0
+              }
+            ]
+          },
+          {
+            "cycle": 2,
+            "data": [
+              {
+                "name": "/system/priv-app/SamsungGallery2018/SamsungGallery2018.apk",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/etc/icu/icudt76l.dat",
+                "val": 0
+              },
+              {
+                "name": "/system/framework/framework-res.apk",
+                "val": 0
+              }
+            ]
+          },
+          {
+            "cycle": 3,
+            "data": [
+              {
+                "name": "/system/priv-app/SamsungGallery2018/SamsungGallery2018.apk",
+                "val": 0
+              },
+              {
+                "name": "/system/fonts/OneUISans-VF.ttf",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/etc/icu/icudt76l.dat",
+                "val": 0
+              },
+              {
+                "name": "/system/framework/framework-res.apk",
+                "val": 0
+              }
+            ]
+          }
+        ],
+        "binder_transaction": {
+          "duration_ms": 73.461,
+          "count": 82
+        }
+      }
+    },
+    {
+      "app": "note",
+      "entry": {
+        "State": [
+          "Cold",
+          "Cold",
+          "Cold"
+        ],
+        "sequence": {
+          "App Execution Time": 669.784,
+          "Touch Down ~ Start Proc": 18.57,
+          "Start Proc": 0.162,
+          "Activity Start": 212.216,
+          "activityStart ~ activityResume": 61.605,
+          "Activity Resume": 29.765,
+          "ActivityResume ~ Choreographer": 3.109,
+          "Choreographer": 109.862,
+          "Choreographer ~ ActivityIdle": 94.191,
+          "ActivityIdle": 5.334,
+          "ActivityIdle ~ Animating end": 76.371,
+          "Running": 267.073,
+          "Runnable": 16.146,
+          "Uninterruptible Sleep": 141.39,
+          "Sleeping": 120.082
+        },
+        "extend": {
+          "start_process_abnormal": [
+            [],
+            [],
+            []
+          ],
+          "memory": {
+            "MemFree_MB": 611.93,
+            "MemAvailable_MB": 2761.1,
+            "App_PSS_MB": 166.6,
+            "Pageboostd_MB": 29.73
+          },
+          "abnormal": {
+            "uptime_minutes": 8.0,
+            "start_reasons": [
+              "content provider",
+              "content provider",
+              "content provider"
+            ],
+            "compiler": "speed-profile"
+          }
+        },
+        "top_process_consume_by_cycle": [
+          {
+            "cycle": 1,
+            "process": [
+              {
+                "name": "droid.app.notes",
+                "dut": 611.61,
+                "ref": 0.0,
+                "diff": 611.61
+              },
+              {
+                "name": "surfaceflinger",
+                "dut": 435.72,
+                "ref": 0.0,
+                "diff": 435.72
+              },
+              {
+                "name": "system_server",
+                "dut": 433.22,
+                "ref": 0.0,
+                "diff": 433.22
+              },
+              {
+                "name": "id.app.launcher",
+                "dut": 237.91,
+                "ref": 0.0,
+                "diff": 237.91
+              },
+              {
+                "name": "ndroid.systemui",
+                "dut": 185.13,
+                "ref": 0.0,
+                "diff": 185.13
+              }
+            ]
+          },
+          {
+            "cycle": 2,
+            "process": [
+              {
+                "name": "droid.app.notes",
+                "dut": 588.32,
+                "ref": 253.18,
+                "diff": 335.13
+              },
+              {
+                "name": "system_server",
+                "dut": 707.59,
+                "ref": 433.34,
+                "diff": 274.25
+              },
+              {
+                "name": "chbox:googleapp",
+                "dut": 59.52,
+                "ref": 2.4,
+                "diff": 57.12
+              },
+              {
+                "name": "ogle.android.as",
+                "dut": 26.51,
+                "ref": 2.69,
+                "diff": 23.83
+              },
+              {
+                "name": "android.hardware.graphics.allocator@4.0-service",
+                "dut": 36.31,
+                "ref": 25.66,
+                "diff": 10.65
+              }
+            ]
+          },
+          {
+            "cycle": 3,
+            "process": [
+              {
+                "name": "droid.app.notes",
+                "dut": 548.85,
+                "ref": 246.59,
+                "diff": 302.26
+              },
+              {
+                "name": "system_server",
+                "dut": 627.1,
+                "ref": 382.09,
+                "diff": 245.01
+              },
+              {
+                "name": "ogle.android.as",
+                "dut": 27.3,
+                "ref": 3.12,
+                "diff": 24.18
+              },
+              {
+                "name": "id.app.launcher",
+                "dut": 237.12,
+                "ref": 221.04,
+                "diff": 16.08
+              },
+              {
+                "name": "pageboostd",
+                "dut": 47.08,
+                "ref": 33.88,
+                "diff": 13.2
+              }
+            ]
+          }
+        ],
+        "priority_by_cycle": [
+          {
+            "cycle": 1,
+            "data": {
+              "activityStart": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ],
+              "activityResume": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          },
+          {
+            "cycle": 2,
+            "data": {
+              "activityStart": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ],
+              "activityResume": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          },
+          {
+            "cycle": 3,
+            "data": {
+              "activityStart": [
+                {
+                  "priority": 110,
+                  "percentage": 98.5
+                },
+                {
+                  "priority": 120,
+                  "percentage": 1.5
+                }
+              ],
+              "activityResume": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "priority": 110,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          }
+        ],
+        "frequency_by_cycle": [
+          {
+            "cycle": 1,
+            "data": {
+              "activityStart": [
+                {
+                  "frequency": 2002,
+                  "percentage": 5.63
+                },
+                {
+                  "frequency": 2400,
+                  "percentage": 94.37
+                }
+              ],
+              "activityResume": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          },
+          {
+            "cycle": 2,
+            "data": {
+              "activityStart": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "activityResume": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          },
+          {
+            "cycle": 3,
+            "data": {
+              "activityStart": [
+                {
+                  "frequency": 2002,
+                  "percentage": 2.17
+                },
+                {
+                  "frequency": 2400,
+                  "percentage": 97.83
+                }
+              ],
+              "activityResume": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ],
+              "Choreographer": [
+                {
+                  "frequency": 2400,
+                  "percentage": 100.0
+                }
+              ]
+            }
+          }
+        ],
+        "block_io_by_cycle": [
+          {
+            "cycle": 1,
+            "data": [
+              {
+                "name": "/data/app/Notes40_Removable/Notes40_Removable.apk",
+                "val": 0
+              },
+              {
+                "name": "/system/fonts/OneUISans-VF.ttf",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/etc/icu/icudt76l.dat",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/javalib/core-icu4j.jar",
+                "val": 0
+              },
+              {
+                "name": "/system/framework/framework-res.apk",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/lib64/libicuuc.so",
+                "val": 0
+              },
+              {
+                "name": "/system/lib64/libharfbuzz_ng.so",
+                "val": 0
+              },
+              {
+                "name": "/system/framework/arm64/boot-core-icu4j.oat",
+                "val": 0
+              }
+            ]
+          },
+          {
+            "cycle": 2,
+            "data": [
+              {
+                "name": "/data/app/Notes40_Removable/Notes40_Removable.apk",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/etc/icu/icudt76l.dat",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/javalib/core-icu4j.jar",
+                "val": 0
+              },
+              {
+                "name": "/system/fonts/OneUISans-VF.ttf",
+                "val": 0
+              },
+              {
+                "name": "/system/framework/framework-res.apk",
+                "val": 0
+              },
+              {
+                "name": "/system/lib64/libminikin.so",
+                "val": 0
+              },
+              {
+                "name": "/system/lib64/libharfbuzz_ng.so",
+                "val": 0
+              },
+              {
+                "name": "/system/fonts/Roboto-Regular.ttf",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/lib64/libicuuc.so",
+                "val": 0
+              },
+              {
+                "name": "/system/lib64/libft2.so",
+                "val": 0
+              }
+            ]
+          },
+          {
+            "cycle": 3,
+            "data": [
+              {
+                "name": "/data/app/Notes40_Removable/Notes40_Removable.apk",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/etc/icu/icudt76l.dat",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/javalib/core-icu4j.jar",
+                "val": 0
+              },
+              {
+                "name": "/system/fonts/OneUISans-VF.ttf",
+                "val": 0
+              },
+              {
+                "name": "/apex/com.android.i18n/lib64/libicuuc.so",
+                "val": 0
+              },
+              {
+                "name": "/system/lib64/libft2.so",
+                "val": 0
+              },
+              {
+                "name": "/system/framework/arm64/boot-core-icu4j.oat",
+                "val": 0
+              },
+              {
+                "name": "/system/lib64/libharfbuzz_ng.so",
+                "val": 0
+              }
+            ]
+          }
+        ],
+        "binder_transaction": {
+          "duration_ms": 44.849,
+          "count": 60
+        }
+      }
+    }
+  ]
+}

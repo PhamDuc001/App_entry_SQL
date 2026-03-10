@@ -3,10 +3,10 @@
   "_description": "Registry tổng hợp tất cả model+variant. Thêm model mới: append vào 'variants' + tạo data/[MODEL]_[VARIANT].json + append section vào insights.md",
 
   "active": {
-    "model": "",
-    "variant": "",
-    "last_session": "",
-    "last_timestamp": "",
+    "model": "A266B",
+    "variant": "6GB",
+    "last_session": "6GB_20260310",
+    "last_timestamp": "2026-03-10T08:40:28.171501",
     "next_dut": ""
   },
 
@@ -34,16 +34,15 @@
       "data_file": "data/A266B_6GB.json",
       "chipset": "",
       "ref_device": "",
-      "sessions_count": 0,
-      "last_device_code": "",
-      "last_date": "",
+      "sessions_count": 2,
+      "last_device_code": "6GB",
+      "last_date": "2026-03-10",
       "avg_summary": {
-        "camera":   { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
-        "clock":    { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
-        "gallery":  { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null }
+        "gallery":  { "dut_entry_ET": 576.4475, "dut_reentry_ET": null, "ref_entry_ET": 405.897, "ref_reentry_ET": null },
+        "note":     { "dut_entry_ET": 654.365, "dut_reentry_ET": null, "ref_entry_ET": 476.688, "ref_reentry_ET": null }
       },
-      "verdict_totals": { "regressions": 0, "improvements": 0 },
-      "notes": ""
+      "verdict_totals": { "regressions": 22, "improvements": 0 },
+      "notes": "Initial session - gallery and note apps analyzed. Multiple CPU process regressions detected."
     },
     {
       "model": "A165F",
