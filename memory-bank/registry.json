@@ -1,0 +1,83 @@
+{
+  "_schema": "android-perf-memory-bank-v7",
+  "_description": "Registry tổng hợp tất cả model+variant. Thêm model mới: append vào 'variants' + tạo data/[MODEL]_[VARIANT].json + append section vào insights.md",
+
+  "active": {
+    "model": "",
+    "variant": "",
+    "last_session": "",
+    "last_timestamp": "",
+    "next_dut": ""
+  },
+
+  "variants": [
+    {
+      "model": "A266B",
+      "variant": "4GB",
+      "data_file": "data/A266B_4GB.json",
+      "chipset": "",
+      "ref_device": "",
+      "sessions_count": 0,
+      "last_device_code": "",
+      "last_date": "",
+      "avg_summary": {
+        "camera":   { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
+        "clock":    { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
+        "gallery":  { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null }
+      },
+      "verdict_totals": { "regressions": 0, "improvements": 0 },
+      "notes": ""
+    },
+    {
+      "model": "A266B",
+      "variant": "6GB",
+      "data_file": "data/A266B_6GB.json",
+      "chipset": "",
+      "ref_device": "",
+      "sessions_count": 0,
+      "last_device_code": "",
+      "last_date": "",
+      "avg_summary": {
+        "camera":   { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
+        "clock":    { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
+        "gallery":  { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null }
+      },
+      "verdict_totals": { "regressions": 0, "improvements": 0 },
+      "notes": ""
+    },
+    {
+      "model": "A165F",
+      "variant": "4GB",
+      "data_file": "data/A165F_4GB.json",
+      "chipset": "",
+      "ref_device": "",
+      "sessions_count": 0,
+      "last_device_code": "",
+      "last_date": "",
+      "avg_summary": {
+        "camera":   { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
+        "clock":    { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
+        "gallery":  { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null }
+      },
+      "verdict_totals": { "regressions": 0, "improvements": 0 },
+      "notes": ""
+    },
+    {
+      "model": "A075F",
+      "variant": "4GB",
+      "data_file": "data/A075F_4GB.json",
+      "chipset": "",
+      "ref_device": "",
+      "sessions_count": 0,
+      "last_device_code": "",
+      "last_date": "",
+      "avg_summary": {
+        "camera":   { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
+        "clock":    { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null },
+        "gallery":  { "dut_entry_ET": null, "dut_reentry_ET": null, "ref_entry_ET": null, "ref_reentry_ET": null }
+      },
+      "verdict_totals": { "regressions": 0, "improvements": 0 },
+      "notes": ""
+    }
+  ]
+}
