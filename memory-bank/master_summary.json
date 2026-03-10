@@ -1,0 +1,141 @@
+{
+  "_schema": "android-perf-master-summary-v4",
+  "_description": "Chỉ lưu AVG của mỗi model+variant. KHÔNG lưu raw DUT data (xem trong models/[MODEL]_[VARIANT]/perf_history.json). Cập nhật sau mỗi lần thêm DUT mới.",
+  "_updated": "",
+  "variants": [
+    {
+      "model": "A266B",
+      "variant": "4GB",
+      "folder": "models/A266B_4GB",
+      "sessions_count": 0,
+      "last_dut": "",
+      "last_date": "",
+      "avg": {
+        "Camera": {
+          "Cold": {
+            "App Execution Time": null,
+            "Bind Application": null,
+            "ActivityIdle": null,
+            "App_PSS_MB": null,
+            "MemFree_MB": null
+          },
+          "Warm": {
+            "App Execution Time": null
+          }
+        },
+        "Clock": {
+          "Cold": { "App Execution Time": null },
+          "Warm": { "App Execution Time": null }
+        },
+        "Gallery": {
+          "Cold": { "App Execution Time": null },
+          "Warm": { "App Execution Time": null }
+        }
+      },
+      "overall_verdict": {
+        "total_regressions": 0,
+        "total_improvements": 0,
+        "recurring_issues": []
+      }
+    },
+    {
+      "model": "A266B",
+      "variant": "6GB",
+      "folder": "models/A266B_6GB",
+      "sessions_count": 0,
+      "last_dut": "",
+      "last_date": "",
+      "avg": {
+        "Camera": {
+          "Cold": {
+            "App Execution Time": null,
+            "Bind Application": null,
+            "ActivityIdle": null,
+            "App_PSS_MB": null,
+            "MemFree_MB": null
+          },
+          "Warm": { "App Execution Time": null }
+        },
+        "Clock": {
+          "Cold": { "App Execution Time": null },
+          "Warm": { "App Execution Time": null }
+        },
+        "Gallery": {
+          "Cold": { "App Execution Time": null },
+          "Warm": { "App Execution Time": null }
+        }
+      },
+      "overall_verdict": {
+        "total_regressions": 0,
+        "total_improvements": 0,
+        "recurring_issues": []
+      }
+    },
+    {
+      "model": "A165F",
+      "variant": "4GB",
+      "folder": "models/A165F_4GB",
+      "sessions_count": 0,
+      "last_dut": "",
+      "last_date": "",
+      "avg": {
+        "Camera": {
+          "Cold": {
+            "App Execution Time": null,
+            "Bind Application": null,
+            "ActivityIdle": null,
+            "App_PSS_MB": null,
+            "MemFree_MB": null
+          },
+          "Warm": { "App Execution Time": null }
+        },
+        "Clock": {
+          "Cold": { "App Execution Time": null },
+          "Warm": { "App Execution Time": null }
+        },
+        "Gallery": {
+          "Cold": { "App Execution Time": null },
+          "Warm": { "App Execution Time": null }
+        }
+      },
+      "overall_verdict": {
+        "total_regressions": 0,
+        "total_improvements": 0,
+        "recurring_issues": []
+      }
+    },
+    {
+      "model": "A075F",
+      "variant": "4GB",
+      "folder": "models/A075F_4GB",
+      "sessions_count": 0,
+      "last_dut": "",
+      "last_date": "",
+      "avg": {
+        "Camera": {
+          "Cold": {
+            "App Execution Time": null,
+            "Bind Application": null,
+            "ActivityIdle": null,
+            "App_PSS_MB": null,
+            "MemFree_MB": null
+          },
+          "Warm": { "App Execution Time": null }
+        },
+        "Clock": {
+          "Cold": { "App Execution Time": null },
+          "Warm": { "App Execution Time": null }
+        },
+        "Gallery": {
+          "Cold": { "App Execution Time": null },
+          "Warm": { "App Execution Time": null }
+        }
+      },
+      "overall_verdict": {
+        "total_regressions": 0,
+        "total_improvements": 0,
+        "recurring_issues": []
+      }
+    }
+  ]
+}
