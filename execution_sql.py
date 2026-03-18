@@ -146,7 +146,7 @@ APP_NAME_NORMALIZATION = {
     "recorder": "voice"
 }
 
-CACHE_VERSION = "1.2"  # Tăng lên "1.1", "2.0"... 
+CACHE_VERSION = "1.0"  # Tăng lên "1.1", "2.0"... 
 
 # CRITICAL: Set environment variables TRƯỚC KHI import bất cứ thứ gì
 os.environ['NUMPY_EXPERIMENTAL_ARRAY_FUNCTION'] = '0'

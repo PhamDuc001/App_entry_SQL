@@ -1709,5 +1709,48 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
     metrics["App Package"] = app_pkg 
     return metrics
 
+    '''
+    def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int, cpu_cores: List[int]):
+    if not cpu_cores or dur_time <= 0: return None
+    cpu_cores_str = ','.join(map(str, cpu_cores))
+    end_time = start_time + dur_time
+    
+    sql = f"""
+    SELECT 
+        COALESCE(
+            process.name, 
+            CASE 
+                WHEN main_thread.name LIKE '%binder%' OR main_thread.name LIKE '%kworker%' THEN NULL
+                ELSE main_thread.name
+            END, 
+            'PID-' || process.pid
+        ) as proc_name,
+        process.pid as raw_pid,
+        
+        -- Dùng MIN/MAX để lấy đúng khoảng thời gian giao nhau (Overlap Duration)
+        SUM(MIN(sched_slice.ts + sched_slice.dur, {end_time}) - MAX(sched_slice.ts, {start_time})) / 1e6 AS dur_ms,
+        
+        COUNT(*) AS Occurences, 
+        
+        ROUND(SUM(MIN(sched_slice.ts + sched_slice.dur, {end_time}) - MAX(sched_slice.ts, {start_time})) * 100.0 / ({dur_time} * 7), 2) AS dur_percent
+        
+    FROM sched_slice 
+    JOIN thread USING (utid) 
+    JOIN process USING (upid)
+    LEFT JOIN thread AS main_thread ON (process.pid = main_thread.tid)
+    
+    WHERE sched_slice.cpu IN ({cpu_cores_str})
+      AND NOT thread.name LIKE 'swapper%' 
+      -- Lọc các slice có khoảng thời gian chạm vào window của chúng ta
+      AND sched_slice.ts < {end_time} 
+      AND (sched_slice.ts + sched_slice.dur) > {start_time}
+      
+    GROUP BY COALESCE(proc_name, raw_pid)
+    ORDER BY dur_ms DESC;
+    """
+    df = query_df(tp, sql)
+    return df
+    '''
+
 
     
