@@ -9,6 +9,69 @@ from multiprocessing import Pool, cpu_count
 from functools import lru_cache
 
 # ============================================================
+# App Mapping and Group Ordering
+# ============================================================
+APP_MAPPING = {
+    # Lowercase display names (for app names extracted from filenames)
+    "camera": "Camera",
+    "helloworld": "Helloworld",
+    "calllog": "Calllog",
+    "dial": "Dial",
+    "clock": "Clock",
+    "contact": "Contact",
+    "contacts": "Contact",
+    "calendar": "Calendar",
+    "calculator": "Calculator",
+    "gallery": "Gallery",
+    "message": "Message",
+    "messages": "Message",
+    "menu": "Menu",
+    "myfile": "My File",
+    "myfiles": "My File",
+    "my file": "My File",
+    "sip": "SIP",
+    "internet": "Internet",
+    "note": "Note",
+    "notes": "Note",
+    "setting": "Setting",
+    "settings": "Setting",
+    "voice": "Voice Recorder",
+    "voicenote": "Voice Recorder",
+    "voicerecorder": "Voice Recorder",
+    "voice recorder": "Voice Recorder",
+    "recent": "Recent",
+}
+
+# Define group order for sorting
+APP_GROUPS = [
+    ["Camera"],  # Group 1
+    ["Helloworld", "Calllog", "Dial", "Clock"],  # Group 2
+    ["Contact", "Calendar", "Calculator"],  # Group 3
+    ["Gallery", "Message", "Menu"],  # Group 4
+    ["My File", "SIP", "Internet"],  # Group 5
+    ["Note", "Setting", "Voice Recorder"],  # Group 6
+    ["Recent"],  # Group 7
+]
+
+def sort_apps_by_group(apps):
+    """
+    Sort apps by predefined groups. Apps not in groups go to the end alphabetically.
+    """
+    def get_group_order(app_name):
+        # Map package name to display name if possible
+        display_name = APP_MAPPING.get(app_name.lower(), app_name)
+        
+        # Search through groups
+        for group_idx, group in enumerate(APP_GROUPS):
+            if display_name in group:
+                return (group_idx, group.index(display_name))
+        
+        # Not in any group, put at the end
+        return (len(APP_GROUPS), display_name.lower())
+    
+    return sorted(apps, key=get_group_order)
+
+# ============================================================
 # OPTIMIZATION: Pre-compile regex patterns at module level
 # ============================================================
 MEMINFO_PATTERN = re.compile(r'^\s*([^\s:]+)\s*:?\s*([+-]?\d+)(?:\s*kB)?\s*.*$')
@@ -381,7 +444,7 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
             data1 = collect_folder_data(folder1, r"_start_", get_first_value)
             data2 = collect_folder_data(folder2, r"_start_", get_first_value)
 
-        all_apps = sorted(set(list(data1.keys()) + list(data2.keys())))
+        all_apps = sort_apps_by_group(set(list(data1.keys()) + list(data2.keys())))
 
         # Determine output filename
         if get_first_value:
@@ -435,7 +498,7 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
         red_fill = PatternFill(start_color="e80707", end_color="e80707", fill_type="solid")
         # Collect all apps
         
-        all_apps = sorted(set(list(data1.keys()) + list(data2.keys())))
+        all_apps = sort_apps_by_group(set(list(data1.keys()) + list(data2.keys())))
         # New.......
         #seen = set()
         # all_apps = []
@@ -544,7 +607,7 @@ def diff_memory(dut_fog_folder_path, ref_fog_folder_path):
             data_end = collect_folder_data(folder1, r"_end_", get_first_value)
         
 
-        all_apps = sorted(set(list(data_start.keys()) + list(data_end.keys())))
+        all_apps = sort_apps_by_group(set(list(data_start.keys()) + list(data_end.keys())))
 
         # Determine output filename
         if get_first_value:
