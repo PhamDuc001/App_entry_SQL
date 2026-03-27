@@ -361,11 +361,11 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
                     metrics['trace_file'] = trace_file
                     metrics['trace_mapping'] = task_mapping_info.get(trace_file, {})
                 
-                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - OK")
+                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {filename} - OK")
                 results[app_name][category][cycle_index] = metrics
             else:
                 # Nếu metrics None (lỗi), giữ nguyên giá trị None tại index đó
-                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - FAILED/EMPTY")
+                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {filename} - FAILED/EMPTY")
                 results[app_name][category][cycle_index] = None
 
     finally:
