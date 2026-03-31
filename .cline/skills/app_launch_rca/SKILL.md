@@ -8,6 +8,36 @@ description: Phân tích JSON output từ execution_sql (DUT vs REF), áp dụng
 
 Skill này cho phép AI agent phân tích dữ liệu app launch performance từ Android devices. Agent nhận JSON output từ `execution_sql` pipeline, so sánh DUT (Device Under Test) vs REF (Reference), và chạy qua **3 diagnostic flows** để identify root-cause và suggest team routing.
 
+## Knowledge Base
+
+**IMPORTANT**: Agent PHẢI đọc knowledge base trước khi phân tích!
+
+### Step 0: Load Knowledge (BẮT BUỘC)
+
+1. **Đọc INDEX.md trước**: `knowledge/INDEX.md`
+   - Đây là chỉ mục toàn bộ knowledge base
+   - Tìm các articles liên quan đến vấn đề đang phân tích
+
+2. **Đọc articles cụ thể dựa trên tags**:
+   - Khi thấy Cold/Warm/Hot launch → Đọc `knowledge/android_framework/app_launch_internals.md`
+   - Khi thấy D-state/Block I/O → Đọc `knowledge/os_internals/io_and_storage.md`
+   - Khi thấy Runnable/Priority bất thường → Đọc `knowledge/os_internals/cpu_scheduling.md`
+   - Khi thấy Memory metrics bất thường → Đọc `knowledge/os_internals/memory_management.md`
+   - Khi thấy Binder count cao → Đọc `knowledge/android_framework/binder_ipc.md`
+
+3. **Áp dụng kiến thức vào phân tích**:
+   - Sử dụng knowledge để giải thích root cause
+   - Refer đến specific sections trong knowledge articles
+   - Áp dụng suggested actions từ knowledge
+
+**Lợi ích của knowledge base**:
+- Cung cấp context sâu về Android internals
+- Giúp agent đưa ra phân tích chính xác hơn
+- Link lý thuyết với metrics thực tế
+- Cung cấp suggested actions có cơ sở
+
+---
+
 ## Input Data
 
 ### JSON Files

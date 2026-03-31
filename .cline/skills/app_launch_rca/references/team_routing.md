@@ -17,7 +17,8 @@
 | **Block I/O increase** | DUT.D-state - REF.D-state > 30ms | **Kernel Memory Team** | Check I/O scheduling, memory pressure |
 | **APK size increase** | APK size diff detected | **App Team** | Optimize APK size |
 | **Parallel process** | start_process_abnormal has entries | **App Team + SWPL** | Investigate parallel process launches |
-| **Top CPU consumer** | process.diff > 300ms | **SWPL** | Contact process owner |
+| **SystemUI CPU high** | SystemUI/ndroid.systemui process.diff > 300ms | **SystemUI Team** | Investigate SystemUI background activities, animations |
+| **Top CPU consumer** | Other process.diff > 300ms | **Process owner team** | Contact responsible team |
 | **PSS increase** | DUT.PSS - REF.PSS > 50MB | **App Owner** | Debug memory usage increase |
 | **ANR/FATAL detected** | ANR or FATAL exists | **App Team** | Fix crash/ANR issue first |
 | **Touch duration high** | DUT - REF > 10ms | **System Team** | Check touch input handling |
@@ -32,6 +33,7 @@
 | **System Team** | Android framework, scheduler, governor | CPU frequency, thread priority, touch |
 | **Kernel Memory Team** | Kernel memory management | MemFree, pageboost, block I/O |
 | **SWPL** | Software Platform team | Process management, cross-cutting concerns |
+| **SystemUI Team** | System UI specific components | SystemUI, launcher, status bar, navigation |
 | **App Owner** | Specific app developer/maintainer | PSS optimization |
 | **Test Team** | QA/Test execution | Re-test conditions |
 
