@@ -32,13 +32,14 @@ class WorkerThread(QThread):
     log_signal = pyqtSignal(str) 
     finished_signal = pyqtSignal()
 
-    def __init__(self, mode, dut_path, ref_path, root_dir, target_apps):
+    def __init__(self, mode, dut_path, ref_path, root_dir, target_apps, is_merge_enabled=False):
         super().__init__()
         self.mode = mode
         self.dut = dut_path
         self.ref = ref_path
         self.root_dir = root_dir
         self.target_apps = target_apps # List app user chọn
+        self.is_merge_enabled = is_merge_enabled  # Thêm tham số merge
 
     def run(self):
         original_stdout = sys.stdout
@@ -53,8 +54,8 @@ class WorkerThread(QThread):
             if self.mode == "execution":
                 import execution_sql
                 importlib.reload(execution_sql) # Reload để reset state nếu cần
-                # FIX: Truyền target_apps vào hàm run_analysis
-                execution_sql.run_analysis(self.dut, self.ref, self.target_apps)
+                # FIX: Truyền target_apps và is_merge_enabled vào hàm run_analysis
+                execution_sql.run_analysis(self.dut, self.ref, self.target_apps, is_merge_enabled=self.is_merge_enabled)
 
             elif self.mode == "reaction":
                 import reaction_sql
@@ -229,7 +230,29 @@ class MainWindow(QWidget):
         input_layout.addWidget(grp_ref)
         main_layout.addLayout(input_layout)
 
-        # 4. START BUTTON
+        # 4. MERGE TOGGLE BUTTON (Chỉ hiển thị khi Execution mode được chọn)
+        self.chk_merge = QPushButton("MERGE MODE: OFF")
+        self.chk_merge.setCheckable(True)
+        self.chk_merge.setObjectName("btnMerge")
+        self.chk_merge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chk_merge.setFixedHeight(35)
+        self.chk_merge.setStyleSheet("""
+            QPushButton#btnMerge {
+                background-color: #dc3545;
+                color: white;
+                border: 1px solid #c82333;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton#btnMerge:checked {
+                background-color: #28a745;
+                border: 1px solid #1e7e34;
+            }
+        """)
+        self.chk_merge.clicked.connect(self.toggle_merge_mode)
+        main_layout.addWidget(self.chk_merge)
+
+        # 5. START BUTTON
         self.btn_start = QPushButton("START ANALYSIS PROCESS")
         self.btn_start.setObjectName("btnStart")
         self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -237,7 +260,7 @@ class MainWindow(QWidget):
         self.btn_start.clicked.connect(self.start_analysis)
         main_layout.addWidget(self.btn_start)
 
-        # 5. APP SELECTION (GRID BUTTONS) - SỬA LẠI PHẦN NÀY
+        # 6. APP SELECTION (GRID BUTTONS) - SỬA LẠI PHẦN NÀY
         app_grp = QGroupBox("🎯 Target Apps (Execution & Reaction Only)")
         app_layout = QVBoxLayout()
         
@@ -276,13 +299,19 @@ class MainWindow(QWidget):
         app_grp.setLayout(app_layout)
         main_layout.addWidget(app_grp)
 
-        # 6. LOG CONSOLE
+        # 7. LOG CONSOLE
         self.txt_log = QTextEdit()
         self.txt_log.setReadOnly(True)
         self.txt_log.setStyleSheet("""
             QTextEdit { background-color: #1e1e1e; color: #00ff00; font-family: Consolas; font-size: 12px; border: 1px solid #555; }
         """)
         main_layout.addWidget(self.txt_log)
+
+    def toggle_merge_mode(self):
+        if self.chk_merge.isChecked():
+            self.chk_merge.setText("MERGE MODE: ON")
+        else:
+            self.chk_merge.setText("MERGE MODE: OFF")
 
     def create_mode_btn(self, text, obj_name):
         btn = QPushButton(text)
@@ -404,7 +433,12 @@ class MainWindow(QWidget):
         ref = self.txt_ref.text().strip()
         target_apps = self.get_selected_apps()
 
-        self.worker = WorkerThread(mode, dut, ref, self.root_dir, target_apps)
+        # Kiểm tra xem có bật Merge mode không (chỉ áp dụng cho Execution mode)
+        is_merge_enabled = False
+        if mode == "execution":
+            is_merge_enabled = self.chk_merge.isChecked()
+
+        self.worker = WorkerThread(mode, dut, ref, self.root_dir, target_apps, is_merge_enabled)
         self.worker.log_signal.connect(self.log)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.start()
