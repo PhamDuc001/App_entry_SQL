@@ -37,9 +37,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #==============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -507,71 +507,73 @@ def collect_trace_files(folder_path: str) -> List[str]:
 # Cache System for Reaction Mode
 # ---------------------------------------------------------------------------
 
-def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str]):
+def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], is_merge_enabled: bool = False):
     """
     Xử lý quét Reaction Trace với Incremental Smart Cache (Cache Cộng Dồn).
-    Tự động nhận diện App còn thiếu, chỉ quét bù những App đó và gộp vào Cache cũ.
     
-    Cache file: .reaction_cache.pkl (lưu trong folder_path)
+    Args:
+        folder_path: Đường dẫn thư mục chứa trace files
+        label: Nhãn để log (DUT/REF)
+        num_workers: Số lượng worker processes
+        target_apps: Danh sách app cần xử lý
+        is_merge_enabled: True nếu bật chế độ Merge
     """
     cache_path = os.path.join(folder_path, ".reaction_cache.pkl")
-    
-    # Chuẩn hóa danh sách App user yêu cầu hiện tại (None = ALL APPS)
     current_targets = sorted(target_apps) if target_apps else None
     
     cached_data = {}
     cached_targets = []
     cache_valid = False
     
-    # 1. ĐỌC CACHE HIỆN TẠI
+    # 1. ĐỌC CACHE HIỆN TẠI (Luôn đọc cache nếu tồn tại)
     if os.path.exists(cache_path):
         try:
             with open(cache_path, 'rb') as f:
                 cache_content = pickle.load(f)
-            
-            # Kiểm tra format và CACHE_VERSION
             if isinstance(cache_content, dict) and cache_content.get("version") == CACHE_VERSION:
                 cached_targets = cache_content.get("target_apps")
                 cached_data = cache_content.get("data", {})
                 cache_valid = True
-                print(f"  -> [{label}] Found valid cache file (Version {CACHE_VERSION}).")
-            else:
-                print(f"  -> [{label}] Cache version mismatch or invalid format. Ignoring old cache...")
+                print(f"  -> [{label}] Found valid cache. Base apps: {cached_targets}")
         except Exception as e:
             print(f"  -> [{label}] [ERROR] Failed to read cache: {e}. Processing from scratch...")
+    else:
+        # [THÊM MỚI] Nếu không có cache, thông báo rõ ràng
+        if not is_merge_enabled:
+            print(f"  -> [{label}] Merge mode OFF. No cache found. Processing from scratch...")
+        else:
+            print(f"  -> [{label}] Merge mode ON. No cache found. Processing from scratch...")
 
-    # 2. XỬ LÝ LOGIC TÌM APP CÒN THIẾU (MISSING APPS)
-    missing_apps = None  # Mặc định None là quét tất cả (ALL APPS)
-    
+    # 2. XỬ LÝ LOGIC TÌM APP CÒN THIẾU
+    missing_apps = None
     if cache_valid:
         if current_targets is None:
-            # TH1: User muốn ALL APPS
             if cached_targets is None:
-                print(f"  -> [{label}] Cache already contains ALL APPS. Loading ...")
                 return cached_data
             else:
-                print(f"  -> [{label}] Requested ALL APPS, but cache only has {cached_targets}.")
-                print(f"  -> [{label}] Must process ALL from scratch...")
-                cached_data = {}  # Reset data cũ để tạo cache ALL mới
-                
+                cached_data = {} 
         else:
-            # TH2: User muốn danh sách App cụ thể
             if cached_targets is None:
-                # Cache có ALL APPS, chỉ việc trích xuất tập con
-                print(f"  -> [{label}] Cache contains ALL APPS. Extracting {current_targets} ...")
                 return {app: data for app, data in cached_data.items() if app in current_targets}
             else:
-                # Tính danh sách App còn thiếu
-                missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
-                
-                if not missing_apps:
-                    print(f"  -> [{label}] All requested apps {current_targets} are in cache. Extracting (⚡)...")
-                    return {app: data for app, data in cached_data.items() if app in current_targets}
+                # [SỬA] Khi merge OFF, vẫn kiểm tra app nào đã có trong cache
+                if is_merge_enabled:
+                    # Merge ON: Tìm app còn thiếu để chạy thêm
+                    missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
+                    if not missing_apps:
+                        print(f"  -> [{label}] All requested apps {current_targets} already in cache. Skipping parse!")
+                        return cached_data
+                    else:
+                        print(f"  -> [{label}] Will process ONLY missing apps: {missing_apps} and MERGE...")
                 else:
-                    print(f"  -> [{label}] Cache is missing apps: {missing_apps}.")
-                    print(f"  -> [{label}] Will process ONLY missing apps and MERGE...")
+                    # Merge OFF: Chỉ chạy app nào chưa có trong cache
+                    missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
+                    if not missing_apps:
+                        print(f"  -> [{label}] All requested apps {current_targets} already in cache. Using cached data...")
+                        return {app: data for app, data in cached_data.items() if app in current_targets}
+                    else:
+                        print(f"  -> [{label}] Will process ONLY missing apps: {missing_apps} (Merge OFF, but still optimizing)...")
     else:
-        # Không có cache hợp lệ
         missing_apps = current_targets
 
     # 3. CHẠY QUÉT TRACE (CHỈ CHO NHỮNG APP CÒN THIẾU)
@@ -579,60 +581,61 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
     new_data = process_all_traces(folder_path, label, num_workers, missing_apps)
     
     # 4. GỘP DỮ LIỆU (MERGE)
-    # Gộp từ điển: Data cũ + Data mới
     merged_data = {**cached_data, **new_data}
-    
-    # Gộp danh sách target_apps
     if missing_apps is None or cached_targets is None:
-        merged_targets = None  # Đại diện cho ALL APPS
+        merged_targets = None
     else:
         merged_targets = sorted(list(set(cached_targets) | set(missing_apps)))
 
     # 5. LƯU LẠI CACHE ĐÃ GỘP
     try:
-        cache_content_to_save = {
-            "version": CACHE_VERSION,
-            "target_apps": merged_targets,
-            "data": merged_data
-        }
-        with open(cache_path, 'wb') as f:
-            pickle.dump(cache_content_to_save, f)
+        cache_content_to_save = {"version": CACHE_VERSION, "target_apps": merged_targets, "data": merged_data}
+        with open(cache_path, 'wb') as f: pickle.dump(cache_content_to_save, f)
         print(f"  -> [{label}] Saved MERGED data to cache: {cache_path}")
     except Exception as e:
         print(f"  -> [{label}] [WARN] Could not save cache: {e}")
         
-    # 6. TRẢ VỀ CHÍNH XÁC NHỮNG GÌ USER YÊU CẦU LẦN NÀY
-    if current_targets is None:
+    # 6. TRẢ VỀ KẾT QUẢ
+    # [SỬA] Trả về dữ liệu phù hợp với chế độ merge
+    if is_merge_enabled:
+        # Merge ON: Trả về toàn bộ data trong cache để Excel vẽ hết
         return merged_data
     else:
-        # Lọc lại chỉ lấy data của các app nằm trong current_targets
-        return {app: data for app, data in merged_data.items() if app in current_targets}
+        # Merge OFF: Chỉ trả về data của các app được yêu cầu
+        if current_targets is None:
+            return merged_data
+        else:
+            return {app: data for app, data in merged_data.items() if app in current_targets}
 
 
 # ---------------------------------------------------------------------------
 # Main Function for External Call
 # ---------------------------------------------------------------------------
 
-def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None) -> None:
+def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None, is_merge_enabled: bool = False) -> None:
     """
     Phân tích Reaction Time từ các trace trong DUT và REF folders
     
     Args:
         dut_folder: Đường dẫn folder DUT
         ref_folder: Đường dẫn folder REF
+        target_apps: Danh sách app cần xử lý
+        is_merge_enabled: True nếu bật chế độ Merge
     """
     num_workers = min(cpu_count(), 8)
 
-    print("="*60)
+    print("="*70)
     print("REACTION TIME ANALYSIS")
-    print("="*60)
+    print(f"Workers: {num_workers} | Available CPUs: {cpu_count()}")
+    print(f"Merge mode: {'ON' if is_merge_enabled else 'OFF'}")
+    print("="*70)
 
     # 1. Processing with Cache
-    print("\n[1/2] Processing DUT folder (with cache)...")
-    dut_res = get_or_process_folder_with_cache(dut_folder, "DUT", num_workers, target_apps)
+    print(f"\n[1/2] Processing DUT folder... (Merge: {'ON' if is_merge_enabled else 'OFF'})")
+    dut_res = get_or_process_folder_with_cache(dut_folder, "DUT", num_workers, target_apps, is_merge_enabled)
     
-    print("\n[2/2] Processing REF folder (with cache)...")
-    ref_res = get_or_process_folder_with_cache(ref_folder, "REF", num_workers, target_apps)
+    print(f"\n[2/2] Processing REF folder... (Merge: {'ON' if is_merge_enabled else 'OFF'})")
+    ref_res = get_or_process_folder_with_cache(ref_folder, "REF", num_workers, target_apps, is_merge_enabled)
 
     # 2. Extract Header Title từ file đầu tiên của DUT
     header_title = "Reaction Metric" # Default
@@ -645,8 +648,20 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         else:
             header_title = first_file
 
-    # 3. Generating Excel
-    print("\nGenerating Excel...")
+    # 3. DỌN DẸP FILE EXCEL CŨ TRƯỚC KHI TẠO FILE MỚI (nếu merge bật)
+    if is_merge_enabled:
+        print("\n[!] Merge mode is ON: Cleaning up old Excel files to avoid duplicates...")
+        import glob
+        for prefix in ['reaction_entry_*.xlsx', 'reaction_reentry_*.xlsx']:
+            for old_file in glob.glob(os.path.join(dut_folder, prefix)):
+                try:
+                    os.remove(old_file)
+                    print(f"  -> Deleted old file: {os.path.basename(old_file)}")
+                except Exception as e:
+                    print(f"  -> Could not delete {os.path.basename(old_file)} (maybe it's open in Excel)")
+
+    # 4. Generating Excel
+    print("\n[3/3] Creating Excel files...")
     create_excel_output(dut_res, ref_res, dut_folder, header_title)
     print("\nDone.")
 
@@ -655,15 +670,17 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
 # ---------------------------------------------------------------------------
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python reaction_sql.py <dut_folder> <ref_folder>")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description='Reaction Time Analysis')
+    parser.add_argument('dut_folder', help='Path to DUT folder')
+    parser.add_argument('ref_folder', help='Path to REF folder')
+    # [THÊM FLAG]
+    parser.add_argument('--merge', action='store_true', help='Enable Merge Mode with previous runs')
     
-    dut_folder = sys.argv[1]
-    ref_folder = sys.argv[2]
+    args = parser.parse_args()
     
     try:
-        run_analysis(dut_folder, ref_folder)
+        run_analysis(args.dut_folder, args.ref_folder, is_merge_enabled=args.merge)
     except Exception as e:
         print(f"\n[ERROR] Analysis failed: {e}")
         traceback.print_exc()

@@ -60,8 +60,8 @@ class WorkerThread(QThread):
             elif self.mode == "reaction":
                 import reaction_sql
                 importlib.reload(reaction_sql)
-                # FIX: Truyền target_apps vào hàm run_analysis
-                reaction_sql.run_analysis(self.dut, self.ref, self.target_apps)
+                # FIX: Truyền target_apps và is_merge_enabled vào hàm run_analysis
+                reaction_sql.run_analysis(self.dut, self.ref, self.target_apps, is_merge_enabled=self.is_merge_enabled)
 
             elif self.mode == "memory":
                 # Run both abnormal_memory and memory_main analyses
@@ -433,9 +433,9 @@ class MainWindow(QWidget):
         ref = self.txt_ref.text().strip()
         target_apps = self.get_selected_apps()
 
-        # Kiểm tra xem có bật Merge mode không (chỉ áp dụng cho Execution mode)
+        # Kiểm tra xem có bật Merge mode không (áp dụng cho Execution và Reaction mode)
         is_merge_enabled = False
-        if mode == "execution":
+        if mode in ["execution", "reaction"]:
             is_merge_enabled = self.chk_merge.isChecked()
 
         self.worker = WorkerThread(mode, dut, ref, self.root_dir, target_apps, is_merge_enabled)

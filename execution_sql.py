@@ -2749,6 +2749,14 @@ def export_avg_to_json(
 def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], extracted: bool, is_merge_enabled: bool = False):
     """
     Xử lý quét Trace với Incremental Smart Cache (Cache Cộng Dồn).
+    
+    Args:
+        folder_path: Đường dẫn thư mục chứa trace files
+        label: Nhãn để log (DUT/REF)
+        num_workers: Số lượng worker processes
+        target_apps: Danh sách app cần xử lý
+        extracted: True nếu bugreport đã được giải nén
+        is_merge_enabled: True nếu bật chế độ Merge
     """
     cache_path = os.path.join(folder_path, ".perf_cache.pkl")
     current_targets = sorted(target_apps) if target_apps else None
@@ -2757,8 +2765,8 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
     cached_targets = []
     cache_valid = False
     
-    # 1. ĐỌC CACHE HIỆN TẠI (Chỉ đọc nếu đang bật chế độ Merge)
-    if is_merge_enabled and os.path.exists(cache_path):
+    # 1. ĐỌC CACHE HIỆN TẠI (Luôn đọc cache nếu tồn tại)
+    if os.path.exists(cache_path):
         try:
             with open(cache_path, 'rb') as f:
                 cache_content = pickle.load(f)
@@ -2766,16 +2774,15 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
                 cached_targets = cache_content.get("target_apps")
                 cached_data = cache_content.get("data", {})
                 cache_valid = True
-                print(f"  -> [{label}] Merge mode ON: Found valid cache. Base apps: {cached_targets}")
+                print(f"  -> [{label}] Found valid cache. Base apps: {cached_targets}")
         except Exception as e:
             print(f"  -> [{label}] [ERROR] Failed to read cache: {e}. Processing from scratch...")
     else:
-        # [THÊM MỚI] Nếu TẮT Merge, xóa cache cũ để tránh dữ liệu rác cho các lần sau
+        # [THÊM MỚI] Nếu không có cache, thông báo rõ ràng
         if not is_merge_enabled:
-            print(f"  -> [{label}] Merge mode OFF. Ignoring and clearing old cache...")
-            if os.path.exists(cache_path):
-                try: os.remove(cache_path)
-                except: pass
+            print(f"  -> [{label}] Merge mode OFF. No cache found. Processing from scratch...")
+        else:
+            print(f"  -> [{label}] Merge mode ON. No cache found. Processing from scratch...")
 
     # 2. XỬ LÝ LOGIC TÌM APP CÒN THIẾU
     missing_apps = None
@@ -2789,13 +2796,23 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
             if cached_targets is None:
                 return {app: data for app, data in cached_data.items() if app in current_targets}
             else:
-                missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
-                if not missing_apps:
-                    print(f"  -> [{label}] All requested apps {current_targets} already in cache. Skipping parse!")
-                    # Nếu đang bật merge, trả về toàn bộ data đang có. Nếu không, chỉ trả data user request.
-                    return cached_data if is_merge_enabled else {app: data for app, data in cached_data.items() if app in current_targets}
+                # [SỬA] Khi merge OFF, vẫn kiểm tra app nào đã có trong cache
+                if is_merge_enabled:
+                    # Merge ON: Tìm app còn thiếu để chạy thêm
+                    missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
+                    if not missing_apps:
+                        print(f"  -> [{label}] All requested apps {current_targets} already in cache. Skipping parse!")
+                        return cached_data
+                    else:
+                        print(f"  -> [{label}] Will process ONLY missing apps: {missing_apps} and MERGE...")
                 else:
-                    print(f"  -> [{label}] Will process ONLY missing apps: {missing_apps} and MERGE...")
+                    # Merge OFF: Chỉ chạy app nào chưa có trong cache
+                    missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
+                    if not missing_apps:
+                        print(f"  -> [{label}] All requested apps {current_targets} already in cache. Using cached data...")
+                        return {app: data for app, data in cached_data.items() if app in current_targets}
+                    else:
+                        print(f"  -> [{label}] Will process ONLY missing apps: {missing_apps} (Merge OFF, but still optimizing)...")
     else:
         missing_apps = current_targets
 
@@ -2814,14 +2831,17 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
     try:
         cache_content_to_save = {"version": CACHE_VERSION, "target_apps": merged_targets, "data": merged_data}
         with open(cache_path, 'wb') as f: pickle.dump(cache_content_to_save, f)
+        print(f"  -> [{label}] Saved MERGED data to cache: {cache_path}")
     except Exception as e:
-        pass
+        print(f"  -> [{label}] [WARN] Could not save cache: {e}")
         
     # 6. TRẢ VỀ KẾT QUẢ
-    # [SỬA QUAN TRỌNG NHẤT] Nếu bật Merge, phải trả về TOÀN BỘ data trong kho chứa để Excel vẽ ra hết (Camera + Note + Gallery)
+    # [SỬA] Trả về dữ liệu phù hợp với chế độ merge
     if is_merge_enabled:
+        # Merge ON: Trả về toàn bộ data trong cache để Excel vẽ hết
         return merged_data
     else:
+        # Merge OFF: Chỉ trả về data của các app được yêu cầu
         if current_targets is None:
             return merged_data
         else:
