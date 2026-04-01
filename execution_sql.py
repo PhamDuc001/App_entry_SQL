@@ -469,7 +469,10 @@ def create_excel_output(
     dut_device_code: str,
     ref_device_code: str,
     dut_folder_path: str = "",
-    ref_folder_path: str = ""
+    ref_folder_path: str = "",
+    dut_model: str = "",
+    dut_version: str = "",
+    ref_version: str = ""
 ) -> None:
     """
     Tạo 2 file Excel: execution_entry.xlsx và execution_reentry.xlsx.
@@ -478,11 +481,17 @@ def create_excel_output(
     """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
+    # Tạo tên file với thông tin DUT/REF model và version
+    if dut_model and dut_version and ref_version:
+        file_prefix = f"execution_{{}}_{dut_model}_{dut_version}_vs_{ref_version}"
+    else:
+        file_prefix = "execution_{}"
+    
     # Tạo 2 files
     for launch_type in ['entry', 'reentry']:
         output_path = os.path.join(
             output_folder,
-            f"execution_{launch_type}_{timestamp}.xlsx"
+            f"{file_prefix.format(launch_type)}_{timestamp}.xlsx"
         )
         
         wb = xlsxwriter.Workbook(output_path)
@@ -2216,6 +2225,31 @@ def create_sheet(
     ws.set_column(0, 0, 30)
     ws.set_column(1, col_idx + 1, 10)
 
+def extract_version_and_model(file_path: str) -> Tuple[str, str]:
+    """
+    Extract version và model từ tên file trace đầu tiên
+    Ví dụ: A166B-YLJ-4GB-BOS-TEST_ZC5_251226.log
+    -> model: A166B, version: ZC5
+    """
+    if not file_path:
+        return "", ""
+    
+    filename = Path(file_path).stem
+    parts = filename.split('_')
+    
+    if len(parts) >= 2:
+        # Model là phần đầu tiên trước dấu '-'
+        model_part = parts[0]
+        model = model_part.split('-')[0] if '-' in model_part else model_part
+        
+        # Version là phần thứ hai từ cuối lên (phần trước timestamp)
+        version = parts[-2] if len(parts) >= 3 else parts[-1]
+        # Nếu version có chứa '-', lấy phần trước dấu '-'
+        version = version.split('-')[0] if '-' in version else version
+        return model, version
+    
+    return "", ""
+
 def extract_device_code(header_title):
     """
     Extract device code từ header_title
@@ -2928,10 +2962,12 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
                 except Exception as e:
                     print(f"  -> Could not delete {os.path.basename(old_file)} (maybe it's open in Excel)")
 
+    # 3. Extract DUT/REF model và version từ tên file trace đầu tiên (đã có sẵn)
+    
     # Create Excel outputs
     print("\n[3/3] Creating Excel files...")
     output_folder = dut_folder  # Lưu vào thư mục DUT
-    create_excel_output(dut_results, ref_results, output_folder, header_title, dut_device_code, ref_device_code, dut_folder, ref_folder)
+    create_excel_output(dut_results, ref_results, output_folder, header_title, dut_device_code, ref_device_code, dut_folder, ref_folder, dut_model, dut_version, ref_version)
     
     # Export JSON data
     print("\n[4/4] Exporting JSON data...")

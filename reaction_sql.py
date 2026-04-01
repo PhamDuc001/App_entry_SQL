@@ -301,14 +301,23 @@ def create_excel_output(
     dut_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
     ref_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
     output_folder: str,
-    header_title: str
+    header_title: str,
+    dut_model: str = "",
+    dut_version: str = "",
+    ref_version: str = ""
 ) -> None:
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Tạo tên file với thông tin DUT/REF model và version
+    if dut_model and dut_version and ref_version:
+        file_prefix = f"reaction_{{}}_{dut_model}_{dut_version}_vs_{ref_version}"
+    else:
+        file_prefix = "reaction_{}"
     
     for launch_type in ['entry', 'reentry']:
         output_path = os.path.join(
             output_folder,
-            f"reaction_{launch_type}_{timestamp}.xlsx"
+            f"{file_prefix.format(launch_type)}_{timestamp}.xlsx"
         )
         
         wb = xlsxwriter.Workbook(output_path)
@@ -501,6 +510,31 @@ def collect_trace_files(folder_path: str) -> List[str]:
         return []
     return sorted([str(f) for f in folder.glob("*.log")])
 
+def extract_version_and_model(file_path: str) -> Tuple[str, str]:
+    """
+    Extract version và model từ tên file trace đầu tiên
+    Ví dụ: A166B-YLJ-4GB-BOS-TEST_ZC5_251226.log
+    -> model: A166B, version: ZC5
+    """
+    if not file_path:
+        return "", ""
+    
+    filename = Path(file_path).stem
+    parts = filename.split('_')
+    
+    if len(parts) >= 2:
+        # Model là phần đầu tiên trước dấu '-'
+        model_part = parts[0]
+        model = model_part.split('-')[0] if '-' in model_part else model_part
+        
+        # Version là phần thứ hai từ cuối lên (phần trước timestamp)
+        version = parts[-2] if len(parts) >= 3 else parts[-1]
+        # Nếu version có chứa '-', lấy phần trước dấu '-'
+        version = version.split('-')[0] if '-' in version else version
+        return model, version
+    
+    return "", ""
+
 # ... (phần đầu file giữ nguyên) ...
 
 # ---------------------------------------------------------------------------
@@ -660,9 +694,34 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
                 except Exception as e:
                     print(f"  -> Could not delete {os.path.basename(old_file)} (maybe it's open in Excel)")
 
+    # 3. Extract DUT/REF model và version từ tên file trace đầu tiên
+    dut_version = ""
+    dut_model = ""
+    ref_version = ""
+    ref_model = ""
+    
+    if dut_files:
+        first_file = Path(dut_files[0]).stem
+        parts = first_file.split("_")
+        # [NEW] Cắt chuỗi lấy Model và Version
+        if parts and len(parts[0]) >= 3:
+            dut_version = parts[0][-3:]
+            # Lấy phần còn lại và xóa dấu '-' ở đuôi nếu có (Ví dụ: X135G- -> X135G)
+            dut_model = parts[0][:-3].rstrip('-')
+    
+    ref_files = collect_trace_files(ref_folder)
+    if ref_files:
+        first_ref_file = Path(ref_files[0]).stem
+        parts = first_ref_file.split("_")
+        # [NEW] Cắt chuỗi lấy Model và Version
+        if parts and len(parts[0]) >= 3:
+            ref_version = parts[0][-3:]
+            # Lấy phần còn lại và xóa dấu '-' ở đuôi nếu có (Ví dụ: X135G- -> X135G)
+            ref_model = parts[0][:-3].rstrip('-')
+    
     # 4. Generating Excel
     print("\n[3/3] Creating Excel files...")
-    create_excel_output(dut_res, ref_res, dut_folder, header_title)
+    create_excel_output(dut_res, ref_res, dut_folder, header_title, dut_model, dut_version, ref_version)
     print("\nDone.")
 
 # ---------------------------------------------------------------------------
