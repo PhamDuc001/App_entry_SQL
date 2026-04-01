@@ -6,8 +6,9 @@ import importlib.util
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
                              QLineEdit, QPushButton, QGroupBox, QTextEdit, 
                              QFileDialog, QMessageBox, QApplication, 
-                             QButtonGroup, QScrollArea)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+                             QButtonGroup, QScrollArea, QStyleOptionButton, QStyle)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent
+from PyQt6.QtGui import QCursor
 
 # Danh sách App mặc định
 DEFAULT_TARGET_APPS = [
@@ -113,6 +114,18 @@ class DragDropLineEdit(QLineEdit):
             path = urls[0].toLocalFile()
             self.setText(path)
 
+# --- EVENT FILTER FOR APP BUTTONS ---
+class AppButtonEventFilter(QObject):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def eventFilter(self, obj, event):
+        # Block mouse events to prevent interaction
+        if event.type() in [QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease, 
+                           QEvent.Type.MouseButtonDblClick, QEvent.Type.Enter, QEvent.Type.Leave]:
+            return True  # Block the event
+        return False  # Allow other events
+
 # --- MAIN WINDOW ---
 class MainWindow(QWidget):
     def __init__(self):
@@ -122,6 +135,8 @@ class MainWindow(QWidget):
         self.setAcceptDrops(True)
         self.root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.app_buttons = []  # Lưu danh sách các nút app để check state
+        self.app_buttons_enabled = True  # Track if app buttons should be interactive
+        self.app_button_event_filter = AppButtonEventFilter(self)  # Event filter for app buttons
         
         # Multi-mode queue
         self.mode_queue = []
@@ -392,9 +407,8 @@ class MainWindow(QWidget):
         self.txt_dut.setEnabled(enabled)
         self.txt_ref.setEnabled(enabled)
         
-        # App buttons
-        for btn in self.app_buttons:
-            btn.setEnabled(enabled)
+        # App buttons - handle separately to preserve visual state
+        self.set_app_buttons_interactive(enabled)
         
         # Browse buttons by object name
         btn_browse_dut = self.findChild(QPushButton, "btnBrowseDut")
@@ -408,6 +422,41 @@ class MainWindow(QWidget):
         for button in self.findChildren(QPushButton):
             if button.text() in ["Select All", "Uncheck All"]:
                 button.setEnabled(enabled)
+
+    def set_app_buttons_interactive(self, interactive):
+        """Set app buttons interactive state while preserving visual appearance."""
+        self.app_buttons_enabled = interactive
+        if interactive:
+            # Enable interaction and remove visual indicators
+            for btn in self.app_buttons:
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setStyleSheet("")  # Remove any custom styles
+                btn.removeEventFilter(self.app_button_event_filter)  # Remove event filter
+        else:
+            # Disable interaction but preserve visual state
+            for btn in self.app_buttons:
+                btn.setCursor(Qt.CursorShape.ArrowCursor)
+                # Add a visual indicator that buttons are not interactive
+                # but preserve the checked/unchecked appearance
+                if btn.isChecked():
+                    btn.setStyleSheet("""
+                        QPushButton.app-btn:checked {
+                            background-color: #28a745; /* Green */
+                            color: white;
+                            border: 1px solid #1e7e34;
+                            opacity: 0.7;
+                        }
+                    """)
+                else:
+                    btn.setStyleSheet("""
+                        QPushButton.app-btn {
+                            background-color: #555;
+                            color: #aaa;
+                            border: 1px solid #666;
+                            opacity: 0.7;
+                        }
+                    """)
+                btn.installEventFilter(self.app_button_event_filter)  # Install event filter
 
     def _run_next_mode(self):
         """Run the next mode in queue."""
