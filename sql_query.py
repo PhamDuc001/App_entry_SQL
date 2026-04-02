@@ -1174,6 +1174,51 @@ def get_layout_depth_slices(tp: TraceProcessor, tid: int, start_ts: int, end_ts:
 
 
 # -------------------------------------------------------------------
+# ===================== blk_io_schedule ================================
+# -------------------------------------------------------------------
+def get_kernel_block_io(tp: TraceProcessor, app_pid: int, start_time: int, dur_time: int) -> List[Dict[str, Any]]:
+    """
+    Query Block I/O từ tầng Kernel, chỉ tập trung vào Main Thread.
+    """
+    if not dur_time or dur_time <= 0:
+        return []
+
+    end_time = start_time + dur_time
+    
+    # SQL chỉ lấy blocked_function và duration_ms trên Main Thread
+    sql = f"""
+    SELECT 
+        ts.blocked_function,
+        SUM(MIN(ts.ts + ts.dur, {end_time}) - MAX(ts.ts, {start_time})) / 1e6 AS duration_ms
+    FROM thread_state ts
+    JOIN thread t USING (utid)
+    JOIN process p USING (upid)
+    WHERE p.pid = {app_pid}
+      AND t.is_main_thread = 1  -- CHỈ LẤY MAIN THREAD (droid.messaging)
+      AND ts.state = 'D'
+      AND ts.blocked_function IS NOT NULL
+      AND (ts.blocked_function LIKE '%io_schedule%' OR ts.blocked_function LIKE '%blk_%')
+      AND ts.ts < {end_time} AND (ts.ts + ts.dur) > {start_time}
+    GROUP BY ts.blocked_function;
+    """
+    
+    df = query_df(tp, sql)
+    if df is None or df.empty:
+        return []
+        
+    # Chuyển đổi format sang giống với format của Library Block I/O để dễ merge
+    results = []
+    for _, row in df.iterrows():
+        results.append({
+            'libraryName': f"[Kernel] {row['blocked_function']}", # Thêm prefix để dễ phân biệt
+            'timeTotal_ms': float(row['duration_ms']),
+            'occurenceTotal': 0 # Không cần thiết nhưng giữ cấu hình để tránh lỗi parser
+        })
+    return results
+
+
+
+# -------------------------------------------------------------------
 # 5. MAIN ANALYSIS LOGIC
 # -------------------------------------------------------------------
 
@@ -1208,8 +1253,14 @@ def _query_end_ts_dependent_data(
     safe_start_time = touch_down_ts if touch_down_ts else 0
     safe_end_time = end_ts if end_ts else (safe_start_time + 10_000_000_000)
     block_io_df = top_block_IO(tp, app_pid, safe_start_time, safe_end_time)
-    data["Block_IO_Data"] = process_block_io_data(block_io_df)
+    library_block_io = process_block_io_data(block_io_df)
     
+    # Lấy Block I/O tầng Kernel 
+    dur_time = end_ts - touch_down_ts if end_ts and touch_down_ts else 0
+    kernel_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time)
+
+    data["Block_IO_Data"] = library_block_io + kernel_block_io
+
     # [LoadApkAssets Logic]
     # 1. Lấy PID chính xác của System
     sys_pids = get_system_pids(tp)

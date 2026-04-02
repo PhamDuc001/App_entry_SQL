@@ -101,6 +101,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+	icon='icons/app_icon.ico'
 )
 
 coll = COLLECT(
@@ -112,4 +113,5 @@ coll = COLLECT(
     upx=True,
     upx_exclude=[],
     name='TraceTool',
+	icon='icons/app_icon.ico'
 )
