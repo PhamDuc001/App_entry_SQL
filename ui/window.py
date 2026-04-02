@@ -427,11 +427,14 @@ class MainWindow(QWidget):
         """Set app buttons interactive state while preserving visual appearance."""
         self.app_buttons_enabled = interactive
         if interactive:
-            # Enable interaction and remove visual indicators
+            # Enable interaction and restore full styles
             for btn in self.app_buttons:
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setStyleSheet("")  # Remove any custom styles
                 btn.removeEventFilter(self.app_button_event_filter)  # Remove event filter
+                # Force style update by clearing and reapplying
+                btn.setStyleSheet("")
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
         else:
             # Disable interaction but preserve visual state
             for btn in self.app_buttons:
