@@ -1257,7 +1257,9 @@ def _query_end_ts_dependent_data(
     
     # Lấy Block I/O tầng Kernel 
     dur_time = end_ts - touch_down_ts if end_ts and touch_down_ts else 0
-    kernel_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time)
+    # kernel_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time)
+    kernel_block_io = get_kernel_block_io(tp, 6000, 333991495000, 334161281000-333991495000)
+    print(f"kernel_block_io",  kernel_block_io)
 
     data["Block_IO_Data"] = library_block_io + kernel_block_io
 

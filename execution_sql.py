@@ -79,9 +79,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -2368,10 +2368,12 @@ def export_avg_to_json(
         
         sequence_data = {}
         for metric in sequence_metrics:
-            values = []
+            # [UPDATED v3] Lưu per-cycle values thay vì chỉ average
+            # Format: "metric_name": [val_cycle1, val_cycle2, val_cycle3]
+            # Giúp phát hiện spike ở từng cycle mà average che giấu
+            per_cycle_values = []
             for cycle in valid_cycles:
-                # [NEW] Masking Logic: Bỏ qua metric nếu không đúng loại Launch Type
-                # c_type = cycle.get("Launch Type")
+                # Masking Logic: Bỏ qua metric nếu không đúng loại Launch Type
                 c_type = "Cold" if launch_type == "entry" else "Warm"
                 if c_type == "Cold" and metric in WARM_ONLY_KEYS:
                     continue  # Bỏ qua Touch Duration cho cycle Cold
@@ -2380,10 +2382,14 @@ def export_avg_to_json(
                 
                 val = cycle.get(metric, 0.0)
                 if val and val > 0: 
-                    values.append(float(val))
+                    per_cycle_values.append(round(float(val), 3))
+                else:
+                    per_cycle_values.append(0.0)
                     
-            if values: 
-                sequence_data[metric] = round(sum(values) / len(values), 3)
+            # Chỉ lưu nếu có ít nhất 1 giá trị > 0
+            non_zero = [v for v in per_cycle_values if v > 0]
+            if non_zero: 
+                sequence_data[metric] = per_cycle_values
                 
         if sequence_data: result["sequence"] = sequence_data
         
@@ -2422,7 +2428,7 @@ def export_avg_to_json(
             if values: loadapk_data[category] = round(sum(values) / len(values), 3)
         if loadapk_data: extend_data["loadapkassets"] = loadapk_data
         
-        # 2.3 Memory — [REFACTORED] Đọc từ Precomputed_Extend_Data
+        # 2.3 Memory — [UPDATED v3] Per-cycle + Average
         if folder_path:
             memory_data = {}
             mem_free_vals, mem_avail_vals, pss_vals, pb_vals = [], [], [], []
@@ -2431,24 +2437,41 @@ def export_avg_to_json(
                 precomp = cycle.get('Precomputed_Extend_Data', {})
                 
                 mem_free = precomp.get('MemFree', 0.0)
-                if mem_free > 0: mem_free_vals.append(mem_free)
+                mem_free_vals.append(round(mem_free, 2) if mem_free > 0 else 0.0)
                 
                 mem_avail = precomp.get('MemAvailable', 0.0)
-                if mem_avail > 0: mem_avail_vals.append(mem_avail)
+                mem_avail_vals.append(round(mem_avail, 2) if mem_avail > 0 else 0.0)
                 
                 pss = precomp.get('App_PSS', 0.0)
-                if pss > 0: pss_vals.append(pss)
+                pss_vals.append(round(pss, 2) if pss > 0 else 0.0)
                 
                 pb = precomp.get('Pageboostd', 0.0)
-                if pb > 0: pb_vals.append(pb)
+                pb_vals.append(round(pb, 2) if pb > 0 else 0.0)
 
-            if mem_free_vals: memory_data["MemFree_MB"] = round(sum(mem_free_vals)/len(mem_free_vals), 2)
-            if mem_avail_vals: memory_data["MemAvailable_MB"] = round(sum(mem_avail_vals)/len(mem_avail_vals), 2)
-            if pss_vals: memory_data["App_PSS_MB"] = round(sum(pss_vals)/len(pss_vals), 2)
-            if pb_vals: memory_data["Pageboostd_MB"] = round(sum(pb_vals)/len(pb_vals), 2)
+            # Per-cycle lists (giúp phát hiện spike ở từng cycle)
+            non_zero_mf = [v for v in mem_free_vals if v > 0]
+            if non_zero_mf:
+                memory_data["MemFree_MB"] = mem_free_vals
+                memory_data["MemFree_MB_avg"] = round(sum(non_zero_mf)/len(non_zero_mf), 2)
+            
+            non_zero_ma = [v for v in mem_avail_vals if v > 0]
+            if non_zero_ma:
+                memory_data["MemAvailable_MB"] = mem_avail_vals
+                memory_data["MemAvailable_MB_avg"] = round(sum(non_zero_ma)/len(non_zero_ma), 2)
+            
+            non_zero_pss = [v for v in pss_vals if v > 0]
+            if non_zero_pss:
+                memory_data["App_PSS_MB"] = pss_vals
+                memory_data["App_PSS_MB_avg"] = round(sum(non_zero_pss)/len(non_zero_pss), 2)
+            
+            non_zero_pb = [v for v in pb_vals if v > 0]
+            if non_zero_pb:
+                memory_data["Pageboostd_MB"] = pb_vals
+                memory_data["Pageboostd_MB_avg"] = round(sum(non_zero_pb)/len(non_zero_pb), 2)
+            
             if memory_data: extend_data["memory"] = memory_data
             
-        # 2.4 Abnormal — [REFACTORED] Đọc từ Precomputed_Extend_Data
+        # 2.4 Abnormal — [UPDATED v3] Per-cycle + Average cho uptime
         if folder_path:
             abnormal_info = {}
             uptime_vals, start_reasons, kill_reasons, crash_counts, compilers = [], [], [], [], []
@@ -2457,7 +2480,7 @@ def export_avg_to_json(
                 precomp = cycle.get('Precomputed_Extend_Data', {})
                 
                 ut = precomp.get('Uptime', 0)
-                if ut and ut > 0: uptime_vals.append(ut)
+                uptime_vals.append(round(ut, 2) if ut and ut > 0 else 0.0)
                 
                 sr = precomp.get('Start_Reason', "")
                 if sr:
@@ -2476,7 +2499,11 @@ def export_avg_to_json(
                 ct = precomp.get('Compiler', '')
                 if ct: compilers.append(ct)
 
-            if uptime_vals: abnormal_info["uptime_minutes"] = round(sum(uptime_vals)/len(uptime_vals), 2)
+            # Uptime: per-cycle list + average
+            non_zero_ut = [v for v in uptime_vals if v > 0]
+            if non_zero_ut:
+                abnormal_info["uptime_minutes"] = uptime_vals
+                abnormal_info["uptime_minutes_avg"] = round(sum(non_zero_ut)/len(non_zero_ut), 2)
             if start_reasons: abnormal_info["start_reasons"] = list((start_reasons))
             if kill_reasons: abnormal_info["kill_reasons"] = list((kill_reasons))
             if crash_counts: abnormal_info["crash_count_avg"] = round(sum(crash_counts)/len(crash_counts), 1)
@@ -3010,75 +3037,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# Export json v2
-'''
-# =====================
-    # BUILD & WRITE PER-APP JSON FILES
-    # =====================
-    timestamp = datetime.datetime.now().isoformat()
-    
-    # Lấy danh sách tất cả apps từ cả DUT và REF
-    all_apps = set(dut_results.keys()) | set(ref_results.keys())
-    
-    # Tạo output directory
-    output_dir = os.path.join(output_folder, "Output")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    print(f"\n Exporting per-app JSON files...")
-    
-    # Export từng app cho DUT và REF
-    for app_name in sorted(all_apps):
-        # =====================
-        # DUT - Chỉ lấy entry
-        # =====================
-        dut_entry_cycles = dut_results.get(app_name, {}).get("entry", [])
-        ref_entry_cycles = ref_results.get(app_name, {}).get("entry", []) # Lấy sẵn ref cycles
-        
-        if dut_entry_cycles:
-            # [CẬP NHẬT 2] Truyền compare_cycles=ref_entry_cycles và is_dut=True
-            dut_metrics = calculate_metrics_for_app(
-                dut_entry_cycles, app_name, "entry", dut_folder_path, 
-                compare_cycles=ref_entry_cycles, is_dut=True
-            )
-            if dut_metrics:
-                # Flatten structure: device_code, timestamp, type, app, entry
-                dut_json = {
-                    "device_code": dut_device_code,
-                    "timestamp": timestamp,
-                    "type": "DUT",
-                    "app": app_name,
-                    "entry": dut_metrics
-                }
-                
-                # Write to file: app_name_dut.json
-                dut_file_path = os.path.join(output_dir, f"{app_name}_dut.json")
-                with open(dut_file_path, 'w', encoding='utf-8') as f:
-                    json.dump(dut_json, f, indent=2, ensure_ascii=False)
-                print(f"  Created: {app_name}_dut.json")
-        
-        # =====================
-        # REF - Chỉ lấy entry
-        # =====================
-        if ref_entry_cycles:
-            # [CẬP NHẬT 2] Truyền compare_cycles=dut_entry_cycles và is_dut=False
-            ref_metrics = calculate_metrics_for_app(
-                ref_entry_cycles, app_name, "entry", ref_folder_path, 
-                compare_cycles=dut_entry_cycles, is_dut=False
-            )
-            if ref_metrics:
-                # Flatten structure
-                ref_json = {
-                    "device_code": ref_device_code,
-                    "timestamp": timestamp,
-                    "type": "REF",
-                    "app": app_name,
-                    "entry": ref_metrics
-                }
-                
-                # Write to file: app_name_ref.json
-                ref_file_path = os.path.join(output_dir, f"{app_name}_ref.json")
-                with open(ref_file_path, 'w', encoding='utf-8') as f:
-                    json.dump(ref_json, f, indent=2, ensure_ascii=False)
-                print(f"  Created: {app_name}_ref.json")
-'''
