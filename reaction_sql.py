@@ -29,10 +29,7 @@ from sql_query import *
 # ---------------------------------------------------------------------------
 # TRACE_PROCESSOR_BIN = r"D:\Tools\CheckList\Bringup\Plan_convert_SQL\perfetto\trace_processor"
 if sys.platform == "win32":
-    try:
-        TP_FILENAME = "trace_processor"
-    except (FileNotFoundError, OSError, Exception):
-        TP_FILENAME = "trace_processor.exe"
+    TP_FILENAME = "trace_processor.exe"
 else:
     TP_FILENAME = "trace_processor.exe"
 
@@ -308,9 +305,9 @@ def create_excel_output(
 ) -> None:
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Tạo tên file với thông tin DUT/REF model và version
+    # Tạo tên file theo format mới: execution_entry_{DUT_MODEL}_DUT - {DUT_VERSION}_REF - {REF_VERSION}_{timestamp}
     if dut_model and dut_version and ref_version:
-        file_prefix = f"reaction_{{}}_{dut_model}_{dut_version}_vs_{ref_version}"
+        file_prefix = f"execution_{{}}_{dut_model}_DUT-{dut_version}_REF-{ref_version}"
     else:
         file_prefix = "reaction_{}"
     
@@ -541,16 +538,15 @@ def extract_version_and_model(file_path: str) -> Tuple[str, str]:
 # Cache System for Reaction Mode
 # ---------------------------------------------------------------------------
 
-def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], is_merge_enabled: bool = False):
+def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str]):
     """
-    Xử lý quét Reaction Trace với Incremental Smart Cache (Cache Cộng Dồn).
+    Xử lý quét Reaction Trace với Incremental Smart Cache.
     
     Args:
         folder_path: Đường dẫn thư mục chứa trace files
         label: Nhãn để log (DUT/REF)
         num_workers: Số lượng worker processes
         target_apps: Danh sách app cần xử lý
-        is_merge_enabled: True nếu bật chế độ Merge
     """
     cache_path = os.path.join(folder_path, ".reaction_cache.pkl")
     current_targets = sorted(target_apps) if target_apps else None
@@ -559,7 +555,7 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
     cached_targets = []
     cache_valid = False
     
-    # 1. ĐỌC CACHE HIỆN TẠI (Luôn đọc cache nếu tồn tại)
+    # 1. ĐỌC CACHE HIỆN TẠI
     if os.path.exists(cache_path):
         try:
             with open(cache_path, 'rb') as f:
@@ -572,11 +568,7 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
         except Exception as e:
             print(f"  -> [{label}] [ERROR] Failed to read cache: {e}. Processing from scratch...")
     else:
-        # [THÊM MỚI] Nếu không có cache, thông báo rõ ràng
-        if not is_merge_enabled:
-            print(f"  -> [{label}] Merge mode OFF. No cache found. Processing from scratch...")
-        else:
-            print(f"  -> [{label}] Merge mode ON. No cache found. Processing from scratch...")
+        print(f"  -> [{label}] No cache found. Processing from scratch...")
 
     # 2. XỬ LÝ LOGIC TÌM APP CÒN THIẾU
     missing_apps = None
@@ -590,63 +582,46 @@ def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: 
             if cached_targets is None:
                 return {app: data for app, data in cached_data.items() if app in current_targets}
             else:
-                # [SỬA] Khi merge OFF, vẫn kiểm tra app nào đã có trong cache
-                if is_merge_enabled:
-                    # Merge ON: Tìm app còn thiếu để chạy thêm
-                    missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
-                    if not missing_apps:
-                        print(f"  -> [{label}] All requested apps {current_targets} already in cache. Skipping parse!")
-                        return cached_data
-                    else:
-                        print(f"  -> [{label}] Will process ONLY missing apps: {missing_apps} and MERGE...")
+                missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
+                if not missing_apps:
+                    print(f"  -> [{label}] All requested apps {current_targets} already in cache. Using cached data...")
+                    return {app: data for app, data in cached_data.items() if app in current_targets}
                 else:
-                    # Merge OFF: Chỉ chạy app nào chưa có trong cache
-                    missing_apps = sorted(list(set(current_targets) - set(cached_targets)))
-                    if not missing_apps:
-                        print(f"  -> [{label}] All requested apps {current_targets} already in cache. Using cached data...")
-                        return {app: data for app, data in cached_data.items() if app in current_targets}
-                    else:
-                        print(f"  -> [{label}] Will process ONLY missing apps: {missing_apps} (Merge OFF, but still optimizing)...")
+                    print(f"  -> [{label}] Will process ONLY missing apps: {missing_apps}...")
     else:
         missing_apps = current_targets
 
-    # 3. CHẠY QUÉT TRACE (CHỈ CHO NHỮNG APP CÒN THIẾU)
+    # 3. CHẠY QUÉT TRACE
     print(f"  -> [{label}] Processing trace files for: {missing_apps if missing_apps else 'ALL APPS'}...")
     new_data = process_all_traces(folder_path, label, num_workers, missing_apps)
     
-    # 4. GỘP DỮ LIỆU (MERGE)
+    # 4. GỘP DỮ LIỆU
     merged_data = {**cached_data, **new_data}
     if missing_apps is None or cached_targets is None:
         merged_targets = None
     else:
         merged_targets = sorted(list(set(cached_targets) | set(missing_apps)))
 
-    # 5. LƯU LẠI CACHE ĐÃ GỘP
+    # 5. LƯU LẠI CACHE
     try:
         cache_content_to_save = {"version": CACHE_VERSION, "target_apps": merged_targets, "data": merged_data}
         with open(cache_path, 'wb') as f: pickle.dump(cache_content_to_save, f)
-        print(f"  -> [{label}] Saved MERGED data to cache: {cache_path}")
+        print(f"  -> [{label}] Saved data to cache: {cache_path}")
     except Exception as e:
         print(f"  -> [{label}] [WARN] Could not save cache: {e}")
         
     # 6. TRẢ VỀ KẾT QUẢ
-    # [SỬA] Trả về dữ liệu phù hợp với chế độ merge
-    if is_merge_enabled:
-        # Merge ON: Trả về toàn bộ data trong cache để Excel vẽ hết
+    if current_targets is None:
         return merged_data
     else:
-        # Merge OFF: Chỉ trả về data của các app được yêu cầu
-        if current_targets is None:
-            return merged_data
-        else:
-            return {app: data for app, data in merged_data.items() if app in current_targets}
+        return {app: data for app, data in merged_data.items() if app in current_targets}
 
 
 # ---------------------------------------------------------------------------
 # Main Function for External Call
 # ---------------------------------------------------------------------------
 
-def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None, is_merge_enabled: bool = False) -> None:
+def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None) -> None:
     """
     Phân tích Reaction Time từ các trace trong DUT và REF folders
     
@@ -654,22 +629,20 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         dut_folder: Đường dẫn folder DUT
         ref_folder: Đường dẫn folder REF
         target_apps: Danh sách app cần xử lý
-        is_merge_enabled: True nếu bật chế độ Merge
     """
     num_workers = min(cpu_count(), 8)
 
     print("="*70)
     print("REACTION TIME ANALYSIS")
     print(f"Workers: {num_workers} | Available CPUs: {cpu_count()}")
-    print(f"Merge mode: {'ON' if is_merge_enabled else 'OFF'}")
     print("="*70)
 
     # 1. Processing with Cache
-    print(f"\n[1/2] Processing DUT folder... (Merge: {'ON' if is_merge_enabled else 'OFF'})")
-    dut_res = get_or_process_folder_with_cache(dut_folder, "DUT", num_workers, target_apps, is_merge_enabled)
+    print(f"\n[1/2] Processing DUT folder...")
+    dut_res = get_or_process_folder_with_cache(dut_folder, "DUT", num_workers, target_apps)
     
-    print(f"\n[2/2] Processing REF folder... (Merge: {'ON' if is_merge_enabled else 'OFF'})")
-    ref_res = get_or_process_folder_with_cache(ref_folder, "REF", num_workers, target_apps, is_merge_enabled)
+    print(f"\n[2/2] Processing REF folder...")
+    ref_res = get_or_process_folder_with_cache(ref_folder, "REF", num_workers, target_apps)
 
     # 2. Extract Header Title từ file đầu tiên của DUT
     header_title = "Reaction Metric" # Default
@@ -682,18 +655,6 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         else:
             header_title = first_file
 
-    # 3. DỌN DẸP FILE EXCEL CŨ TRƯỚC KHI TẠO FILE MỚI (nếu merge bật)
-    if is_merge_enabled:
-        print("\n[!] Merge mode is ON: Cleaning up old Excel files to avoid duplicates...")
-        import glob
-        for prefix in ['reaction_entry_*.xlsx', 'reaction_reentry_*.xlsx']:
-            for old_file in glob.glob(os.path.join(dut_folder, prefix)):
-                try:
-                    os.remove(old_file)
-                    print(f"  -> Deleted old file: {os.path.basename(old_file)}")
-                except Exception as e:
-                    print(f"  -> Could not delete {os.path.basename(old_file)} (maybe it's open in Excel)")
-
     # 3. Extract DUT/REF model và version từ tên file trace đầu tiên
     dut_version = ""
     dut_model = ""
@@ -703,21 +664,37 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     if dut_files:
         first_file = Path(dut_files[0]).stem
         parts = first_file.split("_")
-        # [NEW] Cắt chuỗi lấy Model và Version
-        if parts and len(parts[0]) >= 3:
-            dut_version = parts[0][-3:]
-            # Lấy phần còn lại và xóa dấu '-' ở đuôi nếu có (Ví dụ: X135G- -> X135G)
-            dut_model = parts[0][:-3].rstrip('-')
+        if parts:
+            # Extract model và version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
+            model_part = parts[0]
+            if '-' in model_part:
+                model_version = model_part.split('-')[0]  # A166B
+                version_part = model_part.split('-')[1]   # ZD7
+                dut_model = model_version
+                dut_version = version_part
+            else:
+                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
+                if len(model_part) >= 3:
+                    dut_version = model_part[-3:]
+                    dut_model = model_part[:-3].rstrip('-')
     
     ref_files = collect_trace_files(ref_folder)
     if ref_files:
         first_ref_file = Path(ref_files[0]).stem
         parts = first_ref_file.split("_")
-        # [NEW] Cắt chuỗi lấy Model và Version
-        if parts and len(parts[0]) >= 3:
-            ref_version = parts[0][-3:]
-            # Lấy phần còn lại và xóa dấu '-' ở đuôi nếu có (Ví dụ: X135G- -> X135G)
-            ref_model = parts[0][:-3].rstrip('-')
+        if parts:
+            # Extract model và version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
+            model_part = parts[0]
+            if '-' in model_part:
+                model_version = model_part.split('-')[0]  # A166B
+                version_part = model_part.split('-')[1]   # ZD7
+                ref_model = model_version
+                ref_version = version_part
+            else:
+                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
+                if len(model_part) >= 3:
+                    ref_version = model_part[-3:]
+                    ref_model = model_part[:-3].rstrip('-')
     
     # 4. Generating Excel
     print("\n[3/3] Creating Excel files...")
@@ -733,13 +710,11 @@ def main():
     parser = argparse.ArgumentParser(description='Reaction Time Analysis')
     parser.add_argument('dut_folder', help='Path to DUT folder')
     parser.add_argument('ref_folder', help='Path to REF folder')
-    # [THÊM FLAG]
-    parser.add_argument('--merge', action='store_true', help='Enable Merge Mode with previous runs')
     
     args = parser.parse_args()
     
     try:
-        run_analysis(args.dut_folder, args.ref_folder, is_merge_enabled=args.merge)
+        run_analysis(args.dut_folder, args.ref_folder)
     except Exception as e:
         print(f"\n[ERROR] Analysis failed: {e}")
         traceback.print_exc()

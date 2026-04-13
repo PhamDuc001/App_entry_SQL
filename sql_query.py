@@ -1,10 +1,13 @@
 import os
 import sys
+import tempfile
+import zlib
 from pathlib import Path
 from typing import Dict, Optional, Any, Tuple, List, Union
 from collections import defaultdict
 import pandas as pd
 from perfetto.trace_processor import TraceProcessor
+from perfetto.trace_processor.api import TraceProcessorConfig
 
 
 # -------------------------------------------------------------------
@@ -496,6 +499,7 @@ def get_thread_state_summary(tp: TraceProcessor, app_tid: int,
 # [File: sql_query.py]
 
 def top_block_IO(tp: TraceProcessor, app_pid: int, start_time: int, end_time: int):
+    # print(f"app_pid, {app_pid}, end_time, {end_time}")
     """
     Lấy danh sách library slices có Block I/O.
     - Filter slices trong khoảng start_time -> end_time.
@@ -1176,9 +1180,60 @@ def get_layout_depth_slices(tp: TraceProcessor, tid: int, start_ts: int, end_ts:
 # -------------------------------------------------------------------
 # ===================== blk_io_schedule ================================
 # -------------------------------------------------------------------
-def get_kernel_block_io(tp: TraceProcessor, app_pid: int, start_time: int, dur_time: int) -> List[Dict[str, Any]]:
+
+def extract_raw_ftrace_data(trace_path: str) -> Optional[bytes]:
+    """
+    Trích xuất raw ftrace data từ file .log (atrace format).
+    Trả về bytes của ftrace text thuần (không wrap HTML) để TraceProcessor
+    có thể parse đầy đủ sched_blocked_reason events.
+    
+    Returns:
+        bytes: Raw ftrace data, hoặc None nếu file không hợp lệ.
+    """
+    try:
+        with open(trace_path, 'rb') as f:
+            content = f.read()
+        
+        if not content or b'\nTRACE:' not in content:
+            return None
+        
+        parts = content.split(b'\nTRACE:', 1)
+        data = parts[1]
+        
+        # Decode sang text
+        trace_text = data.decode('latin-1')
+        
+        # Strip leading whitespace
+        if trace_text.startswith('\r\n'):
+            trace_text = trace_text.replace('\r\n', '\n')
+        elif trace_text.startswith('\r\r\n'):
+            trace_text = trace_text.replace('\r\r\n', '\n')
+        trace_text = trace_text[1:]  # Bỏ newline đầu
+        
+        # Decompress nếu cần
+        if not trace_text.startswith('# tracer'):
+            try:
+                trace_text = zlib.decompress(trace_text.encode('latin-1')).decode('latin-1')
+            except Exception:
+                return None
+        
+        trace_text = trace_text.replace('\r', '')
+        while trace_text and trace_text[0] == '\n':
+            trace_text = trace_text[1:]
+        
+        return trace_text.encode('utf-8')
+    except Exception as e:
+        print(f"[extract_raw_ftrace] Error: {e}")
+        return None
+
+
+def get_kernel_block_io(tp: TraceProcessor, app_pid: int, start_time: int, dur_time: int,
+                        trace_path: str = None) -> List[Dict[str, Any]]:
     """
     Query Block I/O từ tầng Kernel, chỉ tập trung vào Main Thread.
+    
+    Nếu trace_path được cung cấp, sẽ tạo TraceProcessor riêng từ raw ftrace data
+    để đảm bảo sched_blocked_reason events không bị mất qua HTML conversion.
     """
     if not dur_time or dur_time <= 0:
         return []
@@ -1194,7 +1249,7 @@ def get_kernel_block_io(tp: TraceProcessor, app_pid: int, start_time: int, dur_t
     JOIN thread t USING (utid)
     JOIN process p USING (upid)
     WHERE p.pid = {app_pid}
-      AND t.is_main_thread = 1  -- CHỈ LẤY MAIN THREAD (droid.messaging)
+      AND t.is_main_thread = 1
       AND ts.state = 'D'
       AND ts.blocked_function IS NOT NULL
       AND (ts.blocked_function LIKE '%io_schedule%' OR ts.blocked_function LIKE '%blk_%')
@@ -1202,7 +1257,27 @@ def get_kernel_block_io(tp: TraceProcessor, app_pid: int, start_time: int, dur_t
     GROUP BY ts.blocked_function;
     """
     
-    df = query_df(tp, sql)
+    # Debug: Kiểm tra blocked_function availability trên TP hiện tại
+    debug_sql = "SELECT COUNT(*) as total, SUM(CASE WHEN blocked_function IS NOT NULL THEN 1 ELSE 0 END) as has_bf FROM thread_state WHERE state = 'D';"
+    debug_df = query_df(tp, debug_sql)
+    has_bf_in_current_tp = False
+    if debug_df is not None:
+        has_bf = int(debug_df.iloc[0].get('has_bf', 0) or 0)
+        total = int(debug_df.iloc[0].get('total', 0) or 0)
+        # print(f"[Kernel Block I/O] Current TP: D-state rows={total}, has blocked_function={has_bf}")
+        has_bf_in_current_tp = has_bf > 0
+    
+    # Nếu TP hiện tại có blocked_function → query trực tiếp (nhanh hơn)
+    if has_bf_in_current_tp:
+        df = query_df(tp, sql)
+    elif trace_path:
+        # TP hiện tại KHÔNG có blocked_function → tạo TP mới từ raw ftrace
+        # print(f"[Kernel Block I/O] blocked_function missing in current TP, loading raw ftrace from: {Path(trace_path).name}")
+        df = _query_kernel_bio_from_raw(trace_path, sql)
+    else:
+        # print(f"[Kernel Block I/O] No blocked_function data and no trace_path provided, skipping.")
+        return []
+    
     if df is None or df.empty:
         return []
         
@@ -1210,11 +1285,53 @@ def get_kernel_block_io(tp: TraceProcessor, app_pid: int, start_time: int, dur_t
     results = []
     for _, row in df.iterrows():
         results.append({
-            'libraryName': f"[Kernel] {row['blocked_function']}", # Thêm prefix để dễ phân biệt
+            'libraryName': f"[Kernel] {row['blocked_function']}",
             'timeTotal_ms': float(row['duration_ms']),
-            'occurenceTotal': 0 # Không cần thiết nhưng giữ cấu hình để tránh lỗi parser
+            'occurenceTotal': 0
         })
     return results
+
+
+def _query_kernel_bio_from_raw(trace_path: str, sql: str) -> Optional[pd.DataFrame]:
+    """
+    Tạo TraceProcessor tạm từ raw ftrace data và chạy SQL query.
+    Đây là workaround cho việc HTML systrace conversion làm mất sched_blocked_reason.
+    """
+    raw_data = extract_raw_ftrace_data(trace_path)
+    if raw_data is None:
+        print(f"[Kernel Block I/O] Cannot extract raw ftrace from {trace_path}")
+        return None
+    
+    tmp_file = None
+    try:
+        # Ghi raw ftrace vào file tạm
+        tmp_file = tempfile.NamedTemporaryFile(suffix='.systrace', delete=False, mode='wb')
+        tmp_file.write(raw_data)
+        tmp_file.close()
+        
+        # Tạo TP mới từ raw data
+        tp_bin = get_resource_path(os.path.join("perfetto", "trace_processor.exe"))
+        config = TraceProcessorConfig(bin_path=tp_bin)
+        
+        with TraceProcessor(trace=tmp_file.name, config=config) as tp_raw:
+            # Verify blocked_function exists
+            verify_sql = "SELECT COUNT(*) as cnt FROM thread_state WHERE blocked_function IS NOT NULL;"
+            verify_df = query_df(tp_raw, verify_sql)
+            if verify_df is not None:
+                cnt = int(verify_df.iloc[0]['cnt'] or 0)
+                print(f"[Kernel Block I/O] Raw TP: {cnt} rows with blocked_function")
+            
+            return query_df(tp_raw, sql)
+    except Exception as e:
+        print(f"[Kernel Block I/O] Error querying raw trace: {e}")
+        return None
+    finally:
+        # Cleanup file tạm
+        if tmp_file and os.path.exists(tmp_file.name):
+            try:
+                os.unlink(tmp_file.name)
+            except Exception:
+                pass
 
 
 
@@ -1229,7 +1346,8 @@ def _query_end_ts_dependent_data(
     end_ts: int,
     app_pid: int,
     app_tid: int,
-    pid_mapping: Dict[int, str] = None
+    pid_mapping: Dict[int, str] = None,
+    trace_path: str = None
 ) -> Dict[str, Any]:
     """
     Query tất cả data phụ thuộc vào end_ts.
@@ -1254,12 +1372,11 @@ def _query_end_ts_dependent_data(
     safe_end_time = end_ts if end_ts else (safe_start_time + 10_000_000_000)
     block_io_df = top_block_IO(tp, app_pid, safe_start_time, safe_end_time)
     library_block_io = process_block_io_data(block_io_df)
+    # print(f"app_tid, {app_tid}, end_ts, {end_ts}, library_block_io, {library_block_io}")
     
     # Lấy Block I/O tầng Kernel 
     dur_time = end_ts - touch_down_ts if end_ts and touch_down_ts else 0
-    # kernel_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time)
-    kernel_block_io = get_kernel_block_io(tp, 6000, 333991495000, 334161281000-333991495000)
-    print(f"kernel_block_io",  kernel_block_io)
+    kernel_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time, trace_path=trace_path)
 
     data["Block_IO_Data"] = library_block_io + kernel_block_io
 
@@ -1638,7 +1755,8 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
                 end_ts=end_ts_value,
                 app_pid=app_pid,
                 app_tid=app_tid,
-                pid_mapping=pid_mapping
+                pid_mapping=pid_mapping,
+                trace_path=trace_path
             )
     
     metrics["data_by_end_ts"] = data_by_end_ts
@@ -1677,7 +1795,12 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
         safe_start_time = touch_down_ts if touch_down_ts else 0
         safe_end_time = end_ts if end_ts else (safe_start_time + 10_000_000_000)
         block_io_df = top_block_IO(tp, app_pid, safe_start_time, safe_end_time)
-        metrics["Block_IO_Data"] = process_block_io_data(block_io_df)
+        library_block_io = process_block_io_data(block_io_df)
+        
+        # Kernel Block I/O (fallback path)
+        dur_time_fb = (end_ts - touch_down_ts) if end_ts and touch_down_ts else 0
+        kernel_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time_fb, trace_path=trace_path)
+        metrics["Block_IO_Data"] = library_block_io + kernel_block_io
         
         load_apk_pids = get_pid_list(tp)
         if not load_apk_pids:
