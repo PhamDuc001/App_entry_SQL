@@ -34,9 +34,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #==============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -630,7 +630,7 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         ref_folder: Đường dẫn folder REF
         target_apps: Danh sách app cần xử lý
     """
-    num_workers = min(cpu_count(), 8)
+    num_workers = max(cpu_count(), 16)
 
     print("="*70)
     print("REACTION TIME ANALYSIS")

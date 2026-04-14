@@ -34,7 +34,7 @@ for site_pkg in search_paths:
 # --- 2. PROJECT RESOURCES ---
 added_datas = [
     ('ui/styles.qss', 'ui'),                      # GUI Styles
-    ('perfetto/trace_processor', 'perfetto_bin'), # COPY BINARY TO 'perfetto_bin' to avoid conflict
+    ('perfetto/trace_processor.exe', 'perfetto_bin'), # COPY BINARY TO 'perfetto_bin' to avoid conflict
     ('prefix.html', '.'),
     ('suffix.html', '.'),
     ('systrace_trace_viewer.html', '.')
