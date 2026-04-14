@@ -35,9 +35,9 @@ for site_pkg in search_paths:
 added_datas = [
     ('ui/styles.qss', 'ui'),                      # GUI Styles
     ('perfetto/trace_processor.exe', 'perfetto_bin'), # COPY BINARY TO 'perfetto_bin' to avoid conflict
-    ('prefix.html', '.'),
-    ('suffix.html', '.'),
-    ('systrace_trace_viewer.html', '.')
+    ('prefix.html', 'utils/trace'),
+    ('suffix.html', 'utils/trace'),
+    ('systrace_trace_viewer.html', 'utils/trace')
 ]
 
 added_datas.extend(perfetto_datas)
@@ -75,7 +75,7 @@ a = Analysis(
 
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['runtime_hook.py'],
+    runtime_hooks=['utils/runtime_hook.py'],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

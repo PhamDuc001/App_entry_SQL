@@ -45,7 +45,7 @@ import traceback
 
 from perfetto.trace_processor.api import TraceProcessor, TraceProcessorConfig
 from sql_query import *
-from atracetosystrace import convert_trace
+from utils.trace.atracetosystrace import convert_trace
 from multiprocessing import Pool, cpu_count
 from dumpstate_parser import (
     build_trace_bugreport_mapping,
