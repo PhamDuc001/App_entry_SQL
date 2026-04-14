@@ -305,9 +305,9 @@ def create_excel_output(
 ) -> None:
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Tạo tên file theo format mới: execution_entry_{DUT_MODEL}_DUT - {DUT_VERSION}_REF - {REF_VERSION}_{timestamp}
+    # Tạo tên file theo format mới: reaction_entry_{DUT_MODEL}_DUT - {DUT_VERSION}_REF - {REF_VERSION}_{timestamp}
     if dut_model and dut_version and ref_version:
-        file_prefix = f"execution_{{}}_{dut_model}_DUT-{dut_version}_REF-{ref_version}"
+        file_prefix = f"reaction_{{}}_{dut_model}_DUT-{dut_version}_REF-{ref_version}"
     else:
         file_prefix = "reaction_{}"
     
