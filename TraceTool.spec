@@ -35,9 +35,9 @@ for site_pkg in search_paths:
 added_datas = [
     ('ui/styles.qss', 'ui'),                      # GUI Styles
     ('perfetto/trace_processor.exe', 'perfetto_bin'), # COPY BINARY TO 'perfetto_bin' to avoid conflict
-    ('prefix.html', 'utils/trace'),
-    ('suffix.html', 'utils/trace'),
-    ('systrace_trace_viewer.html', 'utils/trace')
+    ('utils/trace/prefix.html', 'utils/trace'),
+    ('utils/trace/suffix.html', 'utils/trace'),
+    ('utils/trace/systrace_trace_viewer.html', 'utils/trace')
 ]
 
 added_datas.extend(perfetto_datas)
@@ -55,7 +55,7 @@ a = Analysis(
     datas=added_datas + encodings_datas,  
     hiddenimports=[
     'execution_sql', 'reaction_sql', 'memory_main', 'pageboost_main',
-    'sql_query', 'atracetosystrace', 'backup_query',
+    'sql_query', 'utils.trace.atracetosystrace',
     # MemoryStatus modules
     'MemoryStatus', 'MemoryStatus.memory_main', 'MemoryStatus.abnormal_memory',
     'MemoryStatus.app_start_kill_analyzer', 'MemoryStatus.analyze_pss',

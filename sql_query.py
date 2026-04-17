@@ -1333,8 +1333,97 @@ def _query_kernel_bio_from_raw(trace_path: str, sql: str) -> Optional[pd.DataFra
             except Exception:
                 pass
 
+# -------------------------------------------------------------------
+# ===================== Camera HAL Block IO ================================
+# -------------------------------------------------------------------
 
+def get_camera_hal_pid(tp: TraceProcessor) -> Optional[int]:
+    """
+    Tìm PID của tiến trình Camera HAL dựa trên slice đặc trưng.
+    """
+    sql = """
+    SELECT pid
+    FROM slice_with_names
+    WHERE name LIKE '%camera3->process_capture_request%'
+    LIMIT 1;
+    """
+    df = query_df(tp, sql)
+    if df is not None and not df.empty:
+        return int(df.iloc[0]['pid'])
+    return None
 
+def get_hal_library_block_io(tp: TraceProcessor, hal_pid: int, start_time: int, end_time: int):
+    """
+    Lấy danh sách library slices có Block I/O cho tiến trình HAL.
+    Quét trên TOÀN BỘ luồng (threads) của HAL thay vì chỉ Main Thread.
+    """
+    if start_time is None: start_time = 0
+    if end_time is None: end_time = 1 << 60
+    sql = f"""
+        WITH 
+        target_context AS (
+            SELECT t.utid
+            FROM thread t
+            JOIN process p USING (upid)
+            WHERE p.pid = {hal_pid}
+            -- Bỏ điều kiện t.is_main_thread = 1 và LIMIT 1 để lấy tất cả worker threads của HAL
+        ),
+        lib_slices AS (
+            SELECT 
+            s.id, s.ts, s.dur, s.name, 
+            tt.utid, (s.ts + s.dur) AS end_ts
+            FROM slice s
+            JOIN thread_track tt ON s.track_id = tt.id
+            WHERE tt.utid IN (SELECT utid FROM target_context)
+            AND s.name LIKE '1%' 
+            AND s.ts >= {start_time} 
+            AND s.ts <= {end_time}
+        ),
+        io_states AS (
+            SELECT ts, dur, utid 
+            FROM thread_state
+            WHERE utid IN (SELECT utid FROM target_context)
+            AND state = 'D'
+            AND ts >= {start_time}
+        )
+        SELECT 
+        lib.name,
+        io.dur,
+        MIN(io.ts) AS first_io_ts
+        FROM lib_slices lib
+        JOIN io_states io 
+        ON lib.utid = io.utid 
+        AND io.ts >= lib.ts
+        AND (io.ts - lib.ts) <= 150000 
+        GROUP BY lib.id
+        ORDER BY lib.ts;
+    """
+    return query_df(tp, sql)
+
+def process_hal_block_io_data(df) -> List[Dict[str, Any]]:
+    """Xử lý DataFrame Library Block I/O của HAL thành list dict."""
+    if df is None or df.empty:
+        return []
+    
+    library_stats = defaultdict(lambda: {'timeTotal': 0, 'occurenceTotal': 0})
+    for _, row in df.iterrows():
+        name_parts = row['name'].split(' , ')
+        if len(name_parts) >= 2:
+            library_name = name_parts[1].strip()
+            duration = int(row['dur'])
+            library_stats[library_name]['timeTotal'] += duration
+            library_stats[library_name]['occurenceTotal'] += 1
+    
+    result = []
+    for lib_name, stats in library_stats.items():
+        result.append({
+            'libraryName': f"[HAL] {lib_name}", # Thêm prefix [HAL]
+            'timeTotal': stats['timeTotal'],
+            'timeTotal_ms': stats['timeTotal'] / 1000000.0,
+            'occurenceTotal': stats['occurenceTotal']
+        })
+    result.sort(key=lambda x: x['timeTotal'], reverse=True)
+    return result
 # -------------------------------------------------------------------
 # 5. MAIN ANALYSIS LOGIC
 # -------------------------------------------------------------------
@@ -1367,18 +1456,30 @@ def _query_end_ts_dependent_data(
     data["Uninterruptible Sleep"] = state_summary.get("D", 0.0)
     data["Sleeping"] = state_summary.get("S", 0.0)
     
-    # [Block I/O]
+    
+    # [1] Block I/O tầng Library (App Process)
     safe_start_time = touch_down_ts if touch_down_ts else 0
     safe_end_time = end_ts if end_ts else (safe_start_time + 10_000_000_000)
+    
     block_io_df = top_block_IO(tp, app_pid, safe_start_time, safe_end_time)
     library_block_io = process_block_io_data(block_io_df)
-    # print(f"app_tid, {app_tid}, end_ts, {end_ts}, library_block_io, {library_block_io}")
     
-    # Lấy Block I/O tầng Kernel 
+    # [2] Block I/O tầng Kernel (App Process) - Nếu bạn vẫn giữ
     dur_time = end_ts - touch_down_ts if end_ts and touch_down_ts else 0
     kernel_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time, trace_path=trace_path)
 
-    data["Block_IO_Data"] = library_block_io + kernel_block_io
+    # ========================================================
+    # [3] MỚI: Block I/O tầng Library (Camera HAL Process)
+    # ========================================================
+    hal_block_io = []
+    hal_pid = get_camera_hal_pid(tp) # Gọi hàm tìm PID ở câu trước
+    if hal_pid:
+        hal_df = get_hal_library_block_io(tp, hal_pid, safe_start_time, safe_end_time)
+        hal_block_io = process_hal_block_io_data(hal_df)
+
+    # [4] MERGE TOÀN BỘ DATA VÀO 1 BẢNG DUY NHẤT
+    data["Block_IO_Data"] = library_block_io + kernel_block_io + hal_block_io
+
 
     # [LoadApkAssets Logic]
     # 1. Lấy PID chính xác của System
