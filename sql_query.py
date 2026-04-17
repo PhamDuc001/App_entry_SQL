@@ -510,7 +510,6 @@ def top_block_IO(tp: TraceProcessor, app_pid: int, start_time: int, end_time: in
     # Xử lý fallback nếu thời gian không hợp lệ
     if start_time is None: start_time = 0
     if end_time is None: end_time = 1 << 60 # Số rất lớn
-
     sql = f"""
         WITH 
         target_context AS (
@@ -582,7 +581,7 @@ def process_block_io_data(df) -> List[Dict[str, Any]]:
             'occurenceTotal': stats['occurenceTotal']
         })
     result.sort(key=lambda x: x['timeTotal'], reverse=True)
-    return result[:10]
+    return result[:20]
 # ===========================LoadApkAsset Query ==============================
 
 def get_system_pids(tp: TraceProcessor) -> Dict[str, int]:
