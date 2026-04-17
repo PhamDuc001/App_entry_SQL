@@ -133,7 +133,7 @@ def analyze_reaction_trace(tp: TraceProcessor, trace_path: str) -> Dict[str, Any
         if cho_info:
             cho_ts, cho_dur, cho_end = cho_info
     else:
-        print(f"    [WARN] Không tìm thấy SystemUI PID trong trace: {trace_path}")
+        print(f"    [WARN] Cannot find SystemUI PID in trace: {trace_path}")
         pass
 
     # [startAnimation] (System Server)

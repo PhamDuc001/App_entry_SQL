@@ -1562,8 +1562,8 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
         if is_recent:
             app_pkg = "com.sec.android.app.launcher" 
         else:
-            print(f"Không tìm được launching:... trong trace {trace_path}")
-            raise RuntimeError(f"Không tìm được launching:... trong trace {trace_path}")
+            print(f"Cannot find launching:... in trace {trace_path}")
+            raise RuntimeError(f"Cannot find launching:... in trace {trace_path}")
             # return {}
             
 
@@ -1605,7 +1605,7 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
     # [Touch Down]
     touch_down_ts = get_first_deliver_input(tp)
     if touch_down_ts is None:
-        print("Không tìm thấy deliverInputEvent trong trace")
+        print("Cannot find deliverInputEvent in trace")
 
     # [Animating] (Recent không có animating trong system_server)
     animating_end = 0
@@ -1614,7 +1614,7 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
             animating_end = get_animating(tp)
         except RuntimeError:
             # raise RuntimeError("Trace không hợp lệ: Không tìm thấy 'animating'")
-            print("[WARN] Không tìm thấy 'animating', bỏ qua.") # SỬA: Print thay vì raise
+            print("[WARN] Cannot find 'animating', skipping.") # FIXED: Print instead of raise
             animating_end = 0
 
     # [Launching End]
