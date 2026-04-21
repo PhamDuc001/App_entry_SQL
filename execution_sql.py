@@ -76,9 +76,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -2181,9 +2181,11 @@ def create_sheet(
         dut_count_values.append(count)
         col_idx += 2
     
-    # Avg DUT
-    avg_dut_dur = sum(dut_dur_values) / len(dut_dur_values) if dut_dur_values else 0.0
-    avg_dut_count = sum(dut_count_values) / len(dut_count_values) if dut_count_values else 0.0
+    # Avg DUT - Only calculate average with columns that have values (non-zero)
+    valid_dut_dur = [v for v in dut_dur_values if v > 0]
+    valid_dut_count = [v for v in dut_count_values if v > 0]
+    avg_dut_dur = sum(valid_dut_dur) / len(valid_dut_dur) if valid_dut_dur else 0.0
+    avg_dut_count = sum(valid_dut_count) / len(valid_dut_count) if valid_dut_count else 0.0
     
     write_value_or_empty(ws, row_idx, col_idx, avg_dut_dur, fmt_stats_val)
     ws.write(row_idx, col_idx + 1, int(avg_dut_count) if avg_dut_count > 0 else "", fmt_stats_count)
@@ -2203,9 +2205,11 @@ def create_sheet(
         ref_count_values.append(count)
         col_idx += 2
     
-    # Avg REF
-    avg_ref_dur = sum(ref_dur_values) / len(ref_dur_values) if ref_dur_values else 0.0
-    avg_ref_count = sum(ref_count_values) / len(ref_count_values) if ref_count_values else 0.0
+    # Avg REF - Only calculate average with columns that have values (non-zero)
+    valid_ref_dur = [v for v in ref_dur_values if v > 0]
+    valid_ref_count = [v for v in ref_count_values if v > 0]
+    avg_ref_dur = sum(valid_ref_dur) / len(valid_ref_dur) if valid_ref_dur else 0.0
+    avg_ref_count = sum(valid_ref_count) / len(valid_ref_count) if valid_ref_count else 0.0
     
     write_value_or_empty(ws, row_idx, col_idx, avg_ref_dur, fmt_stats_val)
     ws.write(row_idx, col_idx + 1, int(avg_ref_count) if avg_ref_count > 0 else "", fmt_stats_count)
@@ -2592,6 +2596,49 @@ def export_avg_to_json(
                 
         if cpu_cycles_data:
             result["top_process_consume_by_cycle"] = cpu_cycles_data
+        
+        # =========================================================
+        # 3.1 TOP CPU BY THREAD DIFF (TOP 5)
+        # =========================================================
+        cpu_thread_cycles_data = []
+        for idx, cycle in valid_cycles_with_idx:
+            c_main = cycle
+            c_comp = compare_cycles[idx] if compare_cycles and idx < len(compare_cycles) else None
+            
+            # Phân biệt đâu là DUT, đâu là REF để tính Diff = DUT - REF
+            dut_cycle = c_main if is_dut else c_comp
+            ref_cycle = c_comp if is_dut else c_main
+            
+            dut_t = dut_cycle.get("CPU_Thread_Data", []) if dut_cycle else []
+            ref_t = ref_cycle.get("CPU_Thread_Data", []) if ref_cycle else []
+            
+            # Match Thread by (Thread Name, Process Name) vì TID thay đổi
+            merged_t = {}
+            def get_t_key(item): return (item['thread_name'], item['proc_name'])
+            
+            for x in dut_t: merged_t[get_t_key(x)] = {'dut': x['dur_ms'], 'ref': 0.0}
+            for x in ref_t:
+                k = get_t_key(x)
+                if k not in merged_t: merged_t[k] = {'dut': 0.0, 'ref': 0.0}
+                merged_t[k]['ref'] = x['dur_ms']
+                
+            final_thread = []
+            for (tname, pname), v in merged_t.items():
+                # Display name: "Thread (Process)"
+                disp = f"{tname} ({pname})"
+                final_thread.append({'name': disp, 'dut': v['dut'], 'ref': v['ref'], 'diff': v['dut'] - v['ref']})
+            
+            # Sort Diff -> Take Top 5
+            top_5_thread = sorted(final_thread, key=lambda x: x['diff'], reverse=True)[:5]
+            
+            if top_5_thread:
+                cpu_thread_cycles_data.append({
+                    "cycle": idx + 1,
+                    "thread": top_5_thread
+                })
+                
+        if cpu_thread_cycles_data:
+            result["top_thread_consume_by_cycle"] = cpu_thread_cycles_data
 
         # =========================================================
         # 4. PRIORITY STATICS (BY CYCLE) - [REFACTORED]
