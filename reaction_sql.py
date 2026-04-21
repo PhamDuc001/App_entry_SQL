@@ -630,7 +630,7 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         ref_folder: Đường dẫn folder REF
         target_apps: Danh sách app cần xử lý
     """
-    num_workers = max(cpu_count(), 16)
+    num_workers = min(cpu_count(), 8)
 
     print("="*70)
     print("REACTION TIME ANALYSIS")
