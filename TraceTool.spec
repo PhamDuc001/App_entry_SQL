@@ -76,7 +76,22 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['utils/runtime_hook.py'],
-    excludes=[],
+    excludes=[
+        # === ML/AI packages (NOT used by TraceTool) ===
+        # Dependency chain: sentence-transformers -> transformers -> torch (315MB!)
+        'torch', 'torchvision', 'torchaudio',
+        'transformers', 'sentence_transformers', 'sentence-transformers',
+        'huggingface_hub', 'huggingface_hub.inference',
+        'safetensors', 'tokenizers',
+        'scipy', 'scikit-learn', 'sklearn',
+        'tensorflow', 'keras', 'onnxruntime',
+        # === Other unnecessary packages ===
+        'matplotlib', 'PIL', 'Pillow', 'imageio',
+        'networkx', 'sympy', 'nltk', 'spacy',
+        'cv2', 'opencv-python',
+        'tensorboard', 'wandb',
+        'setuptools', 'pip', 'wheel',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
