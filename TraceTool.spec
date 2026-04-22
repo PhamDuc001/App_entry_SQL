@@ -78,18 +78,30 @@ a = Analysis(
     runtime_hooks=['utils/runtime_hook.py'],
     excludes=[
         # === ML/AI packages (NOT used by TraceTool) ===
-        # Dependency chain: sentence-transformers -> transformers -> torch (315MB!)
+        # Dependency chain: sentence-transformers -> transformers -> torch (316MB!)
         'torch', 'torchvision', 'torchaudio',
         'transformers', 'sentence_transformers', 'sentence-transformers',
         'huggingface_hub', 'huggingface_hub.inference',
         'safetensors', 'tokenizers',
+        'hf_xet',                                    # HuggingFace transfer (6.7MB)
+        'faiss', 'faiss_cpu',                        # Facebook AI similarity search (70.9MB)
         'scipy', 'scikit-learn', 'sklearn',
         'tensorflow', 'keras', 'onnxruntime',
-        # === Other unnecessary packages ===
-        'matplotlib', 'PIL', 'Pillow', 'imageio',
-        'networkx', 'sympy', 'nltk', 'spacy',
+        # === Image/Video processing (NOT used) ===
+        'PIL', 'Pillow', 'imageio', 'imageio_ffmpeg', # Video processing (83.6MB + 12.4MB)
         'cv2', 'opencv-python',
+        # === NLP/Text processing (NOT used) ===
+        'regex',                                      # Transformers-specific regex (0.7MB)
+        'tokenizers',                                 # NLP tokenization (7.1MB)
+        # === Plotting (NOT used) ===
+        'matplotlib',
+        # === Tk/Tcl GUI toolkit (only needed by matplotlib/PIL) ===
+        'tkinter', '_tkinter', 'tk', 'tcl', 'tcl8',  # 4.3MB
+        # === Other unnecessary packages ===
+        'networkx', 'sympy', 'nltk', 'spacy',
         'tensorboard', 'wandb',
+        'beautifulsoup4', 'bs4',                      # Web scraping
+        'libcst',                                     # Code analysis
         'setuptools', 'pip', 'wheel',
     ],
     win_no_prefer_redirects=False,
