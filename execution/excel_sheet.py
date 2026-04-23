@@ -1,0 +1,1677 @@
+from execution.config import *
+from execution.processor import select_common_end_ts_type, get_metrics_for_end_ts_type
+
+def write_value_or_empty(ws, row, col, value, fmt):
+    """Ghi giá trị vào Excel, nếu là 0.0 thì để trống"""
+    if value == 0.0:
+        ws.write(row, col, "", fmt)
+    else:
+        ws.write(row, col, value, fmt)
+
+def get_filtered_metric_rows(launch_type: str, app_name: str, has_cold: bool, has_warm: bool) -> List[Tuple[str, str]]:
+    """Trả về danh sách các hàng metric cần hiển thị."""
+    prefix = "1st" if launch_type == "entry" else "2nd"
+    if prefix == "1st":
+        launch_type = "Enter Execution"
+    elif prefix == "2nd":
+        launch_type = "Enter Execution"
+    else:
+        launch_type = "Enter Execution"
+    app_display = app_name.capitalize()
+    execution_label = f"{prefix} {launch_type} ({app_display})"
+    is_camera = "camera" in app_name.lower()
+    rows = [
+        (execution_label, "App Execution Time"),
+        ("", ""),
+    ]
+    if has_cold:
+        rows.extend([
+            ("Touch Down ~ Start Proc", "Touch Down ~ Start Proc"),
+            ("Start Proc", "Start Proc"),
+            ("    ~", "Start Proc ~ ActivityThreadMain"),
+            ("ActivityThreadMain", "Activity Thread Main"),
+            ("    ~", "ActivityThreadMain ~ bindApplication"),
+            ("BindApplication", "Bind Application"),
+            ("    ~", "bindApplication ~ activityStart"),
+        ])
+    if has_warm:
+        rows.extend([
+            ("Touch Duration", "Touch Duration"),
+            ("Touch Up ~ ActivityStart", "Touch Up ~ Activity Start"),
+        ])
+    rows.append(("ActivityStart", "Activity Start"))
+    if is_camera:
+        rows.extend([
+            ("onCreate", "onCreate"),
+            ("OpenCameraRequest", "OpenCameraRequest"),
+            ("    ~", "activityStart ~ activityResume"),
+            ("ActivityResume", "Activity Resume"),
+            ("onResume", "onResume"),
+            ("    ~", "ActivityResume ~ Choreographer"),
+            ("Choreographer", "Choreographer"),
+            ("    StartPreviewRequest", "StartPreviewRequest"),
+            ("    ~", "Choreographer ~ ActivityIdle"),
+            ("ActivityIdle", "ActivityIdle"),
+            ("    ~ Animating end", "ActivityIdle ~ Animating end"),
+        ])
+    else:
+        rows.extend([
+            ("    ~", "activityStart ~ activityResume"),
+            ("ActivityResume", "Activity Resume"),
+            ("    ~", "ActivityResume ~ Choreographer"),
+            ("Choreographer", "Choreographer"),
+            ("    ~", "Choreographer ~ ActivityIdle"),
+            ("ActivityIdle", "ActivityIdle"),
+            ("    ~ Animating end", "ActivityIdle ~ Animating end"),
+        ])
+    rows.extend([
+        ("", ""),
+        ("Running", "Running"),
+        ("Runnable", "Runnable"),
+        ("Uninterruptible Sleep", "Uninterruptible Sleep"),
+        ("Sleeping", "Sleeping"),
+    ])
+    return rows
+
+def create_sheet(
+    wb: xlsxwriter.Workbook,
+    sheet_name: str,
+    dut_cycles: List[Dict[str, Any]],
+    ref_cycles: List[Dict[str, Any]],
+    header_title: str,
+    launch_type: str,
+    app_name: str,
+    dut_device_code: str,
+    ref_device_code: str,
+    dut_folder_path: str = "",
+    ref_folder_path: str = ""
+) -> None:
+    ws = wb.add_worksheet(sheet_name)
+    
+    # --- Formats ---
+    fmt_header_main = wb.add_format({"bold": True, "align": "center", "bg_color": "#D3D3D3", "border": 1, "border_color": "#000000"})
+    fmt_header_dut = wb.add_format({"bold": True, "align": "center", "bg_color": "#90EE90", "border": 1, "border_color": "#000000"})
+    fmt_header_ref = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFB366", "border": 1, "border_color": "#000000"})
+    fmt_header_diff = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFFF99", "border": 1, "border_color": "#000000"})
+    fmt_label = wb.add_format({"align": "left", "border": 1, "border_color": "#000000"})
+    fmt_label_highlight = wb.add_format({"align": "left", "italic": True, "font_color": "#008000"}) 
+    # Format riêng cho "Start proc" (Căn trái ngang, giữa dọc)
+    fmt_start_proc = wb.add_format({"align": "left", "valign": "vcenter", "border": 1, "border_color": "#000000"})
+    fmt_val = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
+    fmt_text = wb.add_format({"align": "center", "border": 1, "border_color": "#000000"})
+    fmt_diff_slow = wb.add_format({"num_format": "0.000", "align": "center", "bg_color": "#FFB3B3", "border": 1, "border_color": "#000000"})
+    fmt_diff_fast = wb.add_format({"num_format": "0.000", "align": "center", "bg_color": "#B3FFB3", "border": 1, "border_color": "#000000"})
+    fmt_diff_normal = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
+    
+    # Format for new section headers (MEMORY, LOADAPKASSETS, ABNORMAL)
+    fmt_section_header = wb.add_format({
+        "bold": True, 
+        "align": "left",
+        "bg_color": "#FFFFFF",
+        "font_color": "#000000",
+        "border": 1,
+        "border_color": "#000000"
+    })
+    fmt_section_value = wb.add_format({"align": "center", "border": 1, "border_color": "#000000"})
+    fmt_section_text = wb.add_format({"align": "left", "border": 1, "border_color": "#000000", "text_wrap": True})
+    
+    # Số lượng cycles
+    num_dut_cycles = len(dut_cycles)
+    num_ref_cycles = len(ref_cycles)
+    max_cycles = max(num_dut_cycles, num_ref_cycles)
+    
+    # =========================================================================
+    # [NEW] PRE-PROCESS: Chọn common end_ts type cho mỗi cycle pair
+    # Điều này đảm bảo DUT và REF được so sánh với cùng time window
+    # =========================================================================
+    adjusted_dut_cycles = []
+    adjusted_ref_cycles = []
+    end_ts_types_used = []  # Track which type was used for each cycle
+    
+    for i in range(max_cycles):
+        dut_cycle = dut_cycles[i] if i < num_dut_cycles else None
+        ref_cycle = ref_cycles[i] if i < num_ref_cycles else None
+        
+        if dut_cycle and ref_cycle:
+            # Có cả DUT và REF → tìm common end_ts type
+            common_type = select_common_end_ts_type(dut_cycle, ref_cycle)
+            
+            if common_type:
+                # Lấy data cho common type
+                adj_dut = get_metrics_for_end_ts_type(dut_cycle, common_type)
+                adj_ref = get_metrics_for_end_ts_type(ref_cycle, common_type)
+                end_ts_types_used.append(common_type)
+            else:
+                # Không có common type → dùng data gốc, sẽ có warning
+                adj_dut = dut_cycle
+                adj_ref = ref_cycle
+                end_ts_types_used.append("mismatch")
+        elif dut_cycle:
+            adj_dut = dut_cycle
+            adj_ref = None
+            end_ts_types_used.append("dut_only")
+        elif ref_cycle:
+            adj_dut = None
+            adj_ref = ref_cycle
+            end_ts_types_used.append("ref_only")
+        else:
+            adj_dut = None
+            adj_ref = None
+            end_ts_types_used.append(None)
+        
+        adjusted_dut_cycles.append(adj_dut)
+        adjusted_ref_cycles.append(adj_ref)
+    
+    # Replace cycles với adjusted versions
+    # dut_cycles = [c for c in adjusted_dut_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_dut_cycles if c is not None]))
+    # ref_cycles = [c for c in adjusted_ref_cycles if c is not None] + [None] * (max_cycles - len([c for c in adjusted_ref_cycles if c is not None]))
+    
+    # Rebuild lists to maintain original length
+    dut_cycles = adjusted_dut_cycles
+    ref_cycles = adjusted_ref_cycles
+
+    # --- CHECK GLOBAL STATE (ALL COLD / ALL WARM) ---
+    all_cycles_data = [c for c in dut_cycles + ref_cycles if c is not None]
+    has_cold = any(c.get("Launch Type") == "Cold" for c in all_cycles_data)
+    has_warm = any(c.get("Launch Type") == "Warm" for c in all_cycles_data)
+
+    # --- HEADER ROW ---
+    ws.write("A1", header_title, fmt_header_main)
+    
+    # DUT header with device code
+    dut_header_text = f"DUT - {dut_device_code} (ms)" if dut_device_code else "DUT (ms)"
+    col_offset = 1
+    ws.merge_range(0, col_offset, 0, col_offset + max_cycles, dut_header_text, fmt_header_dut)
+    
+    # REF header with device code
+    ref_header_text = f"REF - {ref_device_code} (ms)" if ref_device_code else "REF (ms)"
+    col_offset += max_cycles + 1
+    ws.merge_range(0, col_offset, 0, col_offset + max_cycles, ref_header_text, fmt_header_ref)
+    
+    # Diff header
+    col_offset += max_cycles + 1
+    ws.write(0, col_offset, "Diff", fmt_header_diff)
+
+    # --- SUB-HEADER ROW: Thay đổi thành "1 (Cold)" hoặc "1 (Warm)" ---
+    col_idx = 1
+    
+    def get_cycle_title(idx, cycle_list):
+        # [FIX] Thêm điều kiện kiểm tra cycle_list[idx] is not None
+        if idx < len(cycle_list) and cycle_list[idx] is not None:
+            l_type = cycle_list[idx].get("Launch Type", "Unknown")
+            return f"{idx + 1} ({l_type})"
+        return f"{idx + 1}"
+
+    # DUT Sub-headers
+    for i in range(max_cycles):
+        title = get_cycle_title(i, dut_cycles)
+        ws.write(1, col_idx, title, fmt_header_dut)
+        col_idx += 1
+    ws.write(1, col_idx, "Avg", fmt_header_dut)
+    col_idx += 1
+    
+    # REF Sub-headers
+    for i in range(max_cycles):
+        title = get_cycle_title(i, ref_cycles)
+        ws.write(1, col_idx, title, fmt_header_ref)
+        col_idx += 1
+    ws.write(1, col_idx, "Avg", fmt_header_ref)
+    col_idx += 1
+    
+    ws.write(1, col_idx, "", fmt_header_diff)
+    
+    ws.set_column("A:A", 35) # Tăng độ rộng cột A cho đẹp
+    ws.set_column(1, col_idx, 15) # Tăng độ rộng cột dữ liệu để chứa title dài
+    
+    # --- DATA ROWS ---
+    # Gọi hàm lọc hàng mới (Đã bao gồm logic Camera)
+    metric_rows = get_filtered_metric_rows(launch_type, app_name, has_cold, has_warm)
+    
+    highlight_metrics = ["onCreate", "OpenCameraRequest", "onResume", "StartPreviewRequest"]
+    
+    row_idx = 2
+    for display_name, metric_key in metric_rows:
+        if display_name == "":  # Separator
+            row_idx += 1
+            continue
+            
+        # Write Label
+        if metric_key in highlight_metrics:
+            ws.write(row_idx, 0, display_name, fmt_label_highlight)
+        else:
+            ws.write(row_idx, 0, display_name, fmt_label)
+        
+        # --- WRITE DUT DATA (Masking Logic) ---
+        col_idx = 1
+        dut_values = []
+        for i in range(max_cycles):
+            if i < len(dut_cycles) and dut_cycles[i] is not None:
+                cycle_data = dut_cycles[i]
+                c_type = cycle_data.get("Launch Type")
+                
+                # Logic Masking: Kiểm tra xem có nên ghi dữ liệu không
+                should_write = True
+                if c_type == "Warm" and metric_key in COLD_ONLY_KEYS:
+                    should_write = False
+                elif c_type == "Cold" and metric_key in WARM_ONLY_KEYS:
+                    should_write = False
+                
+                if should_write:
+                    val = cycle_data.get(metric_key, 0.0)
+                    write_value_or_empty(ws, row_idx, col_idx, float(val), fmt_val)
+                    dut_values.append(float(val))
+                else:
+                    ws.write(row_idx, col_idx, "", fmt_text) # Để trống
+            else:
+                ws.write(row_idx, col_idx, "", fmt_val)
+            col_idx += 1
+        
+        # DUT Avg
+        valid_dut = [v for v in dut_values if v > 0]
+        if valid_dut:
+            dut_avg = sum(valid_dut) / len(valid_dut)
+            write_value_or_empty(ws, row_idx, col_idx, dut_avg, fmt_val)
+        else:
+            dut_avg = 0.0
+            write_value_or_empty(ws, row_idx, col_idx, 0.0, fmt_val)
+        col_idx += 1
+        
+        # --- WRITE REF DATA (Masking Logic) ---
+        ref_values = []
+        for i in range(max_cycles):
+            if i < len(ref_cycles) and ref_cycles[i] is not None:
+                cycle_data = ref_cycles[i]
+                c_type = cycle_data.get("Launch Type")
+                
+                # Logic Masking
+                should_write = True
+                if c_type == "Warm" and metric_key in COLD_ONLY_KEYS:
+                    should_write = False
+                elif c_type == "Cold" and metric_key in WARM_ONLY_KEYS:
+                    should_write = False
+                
+                if should_write:
+                    val = cycle_data.get(metric_key, 0.0)
+                    write_value_or_empty(ws, row_idx, col_idx, float(val), fmt_val)
+                    ref_values.append(float(val))
+                else:
+                    ws.write(row_idx, col_idx, "", fmt_text)
+            else:
+                ws.write(row_idx, col_idx, "", fmt_val)
+            col_idx += 1
+        
+        # REF Avg
+        valid_ref = [v for v in ref_values if v > 0]
+        if valid_ref:
+            ref_avg = sum(valid_ref) / len(valid_ref)
+            write_value_or_empty(ws, row_idx, col_idx, ref_avg, fmt_val)
+        else:
+            ref_avg = 0.0
+            write_value_or_empty(ws, row_idx, col_idx, 0.0, fmt_val)
+        col_idx += 1
+        
+        # --- DIFF COLUMN ---
+        diff_val = dut_avg - ref_avg
+        if metric_key == "Uninterruptible Sleep":
+            if diff_val > 30:  # Ngưỡng 30ms cho Uninterruptible Sleep
+                fmt_diff = fmt_diff_slow      
+            elif diff_val < -30:
+                fmt_diff = fmt_diff_fast      
+            else:
+                fmt_diff = fmt_diff_normal     
+        else:
+            # Các metric khác giữ nguyên ngưỡng 10ms
+            if diff_val > 10:
+                fmt_diff = fmt_diff_slow      
+            elif diff_val < -10:
+                fmt_diff = fmt_diff_fast      
+            else:
+                fmt_diff = fmt_diff_normal     
+
+        ws.write(row_idx, col_idx, diff_val, fmt_diff)
+
+        row_idx += 1
+    
+    # ---------------------------------------------------------
+    # === [NEW] Process Start Overlap Section (Merged into Sequence Table) ===
+    # ---------------------------------------------------------
+    
+    # 1. Chuẩn bị dữ liệu Process Names cho từng cột
+    # Map: {column_index: [list_of_process_names]}
+    proc_overlap_map = {} 
+    max_proc_rows = 0 # Số dòng cần thiết để hiển thị hết process nhiều nhất
+    
+    current_col = 1
+    
+    # --- Thu thập dữ liệu DUT ---
+    for i in range(max_cycles):
+        procs = []
+        if i < len(dut_cycles) and dut_cycles[i] is not None:
+            # Lấy data từ 2 nguồn: Abnormal & Background
+            abnormal = dut_cycles[i].get("Abnormal_Process_Data", [])
+            bg = dut_cycles[i].get("Background_Process_States", [])
+            
+            # Dùng set để lọc trùng
+            names = set()
+            for p in abnormal:
+                names.add(p.get('proc_name', ''))
+            for p in bg:
+                names.add(p.get('Thread name', ''))
+            
+            # Lọc bỏ rỗng và sort
+            procs = sorted([n for n in names if n and n != 'Unknown'])
+            
+        proc_overlap_map[current_col] = procs
+        if len(procs) > max_proc_rows:
+            max_proc_rows = len(procs)
+        current_col += 1
+        
+    # Bỏ qua cột DUT Avg
+    current_col += 1
+    
+    # --- Thu thập dữ liệu REF ---
+    for i in range(max_cycles):
+        procs = []
+        if i < len(ref_cycles) and ref_cycles[i] is not None:
+            abnormal = ref_cycles[i].get("Abnormal_Process_Data", [])
+            bg = ref_cycles[i].get("Background_Process_States", [])
+            
+            names = set()
+            for p in abnormal:
+                names.add(p.get('proc_name', ''))
+            for p in bg:
+                names.add(p.get('Thread name', ''))
+            
+            procs = sorted([n for n in names if n and n != 'Unknown'])
+            
+        proc_overlap_map[current_col] = procs
+        if len(procs) > max_proc_rows:
+            max_proc_rows = len(procs)
+        current_col += 1
+        
+    # Bỏ qua REF Avg và Diff
+    current_col += 2 # Skip REF Avg, Diff
+    if not proc_overlap_map or max_proc_rows == 0:
+        pass
+    else:
+        # 2. Vẽ Header cho phần này
+        # Dòng tiêu đề: "Process start overlap"
+        # ws.write(row_idx, 0, "Process start overlap", fmt_label_highlight)
+        # for c in range(1, current_col):
+        #     ws.write(row_idx, c, "", fmt_text)
+        last_col = 2 * max_cycles + 3  # Index của cột Diff
+        ws.merge_range(row_idx, 0, row_idx, last_col, "", fmt_text)
+        
+        row_idx += 1
+        # 3. Vẽ dữ liệu (Dynamic Rows) với merge logic cho "Start proc"
+        # Nếu không có process nào overlap thì ít nhất cũng hiện dòng label
+        total_rows_to_draw = max(1, max_proc_rows)
+        
+        # Merge cột A cho "Start proc" nếu có nhiều dòng
+        if total_rows_to_draw > 1:
+            ws.merge_range(row_idx, 0, row_idx + total_rows_to_draw - 1, 0, "Start proc", fmt_start_proc)
+        else:
+            ws.write(row_idx, 0, "Start proc", fmt_start_proc)
+                
+        for r in range(total_rows_to_draw):
+            # Các cột dữ liệu
+            # Loop qua map đã chuẩn bị
+            for c_idx, p_list in proc_overlap_map.items():
+                if r < len(p_list):
+                    # Ghi tên process
+                    ws.write(row_idx, c_idx, p_list[r], fmt_text)
+                else:
+                    # Ô trống có viền
+                    ws.write(row_idx, c_idx, "", fmt_text)
+                    
+            # Fill viền cho các cột Avg/Diff (để bảng liền mạch)
+            # DUT Avg index = 1 + max_cycles
+            dut_avg_idx = 1 + max_cycles
+            ws.write(row_idx, dut_avg_idx, "", fmt_val)
+                    
+            # REF Avg index
+            ref_avg_idx = dut_avg_idx + 1 + max_cycles
+            ws.write(row_idx, ref_avg_idx, "", fmt_val)
+                    
+            # Diff index
+            diff_idx = ref_avg_idx + 1
+            ws.write(row_idx, diff_idx, "", fmt_val)
+                    
+            row_idx += 1
+
+    # =========================================================================
+    # [NEW] EXTENDED PROFILING SECTIONS
+    # =========================================================================
+    
+    # Calculate column indices (same as main table)
+    total_cols = 1 + max_cycles + 1 + max_cycles + 1 + 1  # Metric + DUT cycles + DUT Avg + REF cycles + REF Avg + Diff
+    dut_avg_col = 1 + max_cycles
+    ref_avg_col = dut_avg_col + 1 + max_cycles
+    diff_col = ref_avg_col + 1
+    
+    # ---------------------------------------------------------
+    # === MEMORY SECTION ===
+    # ---------------------------------------------------------
+    row_idx += 1  # Empty separator
+    
+    # Section header - merged across all columns
+    ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "MEMORY", fmt_section_header)
+    row_idx += 1
+    
+    # Memory metrics: MemFree, MemAvailable, App PSS, Pageboostd
+    memory_metrics = ["MemFree (MB)", "MemAvailable (MB)", "App PSS (MB)", "Pageboostd (MB)"]
+    
+    for metric in memory_metrics:
+        ws.write(row_idx, 0, metric, fmt_label)
+        
+        dut_values = []
+        ref_values = []
+        
+        for i in range(max_cycles):
+            # Get memory data for DUT — [REFACTORED] Đọc từ Precomputed_Extend_Data
+            if i < num_dut_cycles and dut_folder_path:
+                val = 0.0
+                dut_cycle = dut_cycles[i] if i < len(dut_cycles) else None
+                if dut_cycle is not None:
+                    extend_data = dut_cycle.get('Precomputed_Extend_Data', {})
+                    if "MemFree" in metric:
+                        val = extend_data.get('MemFree', 0.0)
+                    elif "MemAvailable" in metric:
+                        val = extend_data.get('MemAvailable', 0.0)
+                    elif "App PSS" in metric:
+                        val = extend_data.get('App_PSS', 0.0)
+                    elif "Pageboostd" in metric:
+                        val = extend_data.get('Pageboostd', 0.0)
+                    
+                ws.write(row_idx, 1 + i, val if val > 0 else "", fmt_section_value)
+                if val > 0:
+                    dut_values.append(val)
+            else:
+                ws.write(row_idx, 1 + i, "", fmt_section_value)
+            
+            # Get memory data for REF
+            if i < num_ref_cycles and ref_folder_path:
+                # Use ref_cycles directly (not adjusted) to ensure trace_mapping is available
+                ref_cycle = ref_cycles[i] if i < len(ref_cycles) else None
+                
+                if "MemFree" in metric:
+                    val = 0.0
+                    if ref_cycle is not None:
+                        extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                        val = extend_data.get('MemFree', 0.0)
+                elif "MemAvailable" in metric:
+                    val = 0.0
+                    if ref_cycle is not None:
+                        extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                        val = extend_data.get('MemAvailable', 0.0)
+                elif "App PSS" in metric:
+                    val = 0.0
+                    if ref_cycle is not None:
+                        extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                        val = extend_data.get('App_PSS', 0.0)
+                elif "Pageboostd" in metric:
+                    val = 0.0
+                    if ref_cycle is not None:
+                        extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                        val = extend_data.get('Pageboostd', 0.0)
+                else:
+                    val = 0.0
+                    
+                ws.write(row_idx, dut_avg_col + 1 + i, val if val > 0 else "", fmt_section_value)
+                if val > 0:
+                    ref_values.append(val)
+            else:
+                ws.write(row_idx, dut_avg_col + 1 + i, "", fmt_section_value)
+        
+        # Calculate and write averages
+        dut_avg = sum(dut_values) / len(dut_values) if dut_values else 0.0
+        ref_avg = sum(ref_values) / len(ref_values) if ref_values else 0.0
+        
+        ws.write(row_idx, dut_avg_col, dut_avg if dut_avg > 0 else "", fmt_val)
+        ws.write(row_idx, ref_avg_col, ref_avg if ref_avg > 0 else "", fmt_val)
+        
+        # Diff calculation
+        if dut_avg > 0 and ref_avg > 0:
+            diff = dut_avg - ref_avg
+            # For memory, higher is better for Free/Available, so positive diff is good
+            if "Free" in metric or "Available" in metric:
+                # fmt_diff = fmt_diff_fast if diff > 0 else (fmt_diff_slow if diff < 0 else fmt_diff_normal)
+                fmt_diff = fmt_diff_normal
+            else:
+                # fmt_diff = fmt_diff_slow if diff > 0 else (fmt_diff_fast if diff < 0 else fmt_diff_normal)
+                fmt_diff = fmt_diff_normal
+            ws.write(row_idx, diff_col, diff, fmt_diff)
+        else:
+            ws.write(row_idx, diff_col, "", fmt_val)
+        
+        row_idx += 1
+    
+    # ---------------------------------------------------------
+    # === LOADAPKASSETS SECTION (EXTENDED) ===
+    # ---------------------------------------------------------
+    
+    # 1. Thu thập dữ liệu trước
+    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in dut_cycles]
+    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in ref_cycles]
+    
+    target_categories = ["system_server", "system_ui", "launching_app"]
+    
+    # 2. Kiểm tra xem có bất kỳ dữ liệu nào không
+    has_loadapk_data = False
+    for cycle_data in all_dut_loadapk + all_ref_loadapk:
+        if isinstance(cycle_data, dict):
+            for cat in target_categories:
+                # Kiểm tra nếu category có list asset và list đó không rỗng
+                if cycle_data.get(cat):
+                    has_loadapk_data = True
+                    break
+        if has_loadapk_data: break
+    
+    # 3. Chỉ vẽ bảng nếu có dữ liệu
+    if has_loadapk_data:
+        row_idx += 1  # Dòng trống ngăn cách
+        
+        # Vẽ Header Section
+        ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "LOADAPKASSETS (>50ms)", fmt_section_header)
+        row_idx += 1
+        
+        # Vẽ từng Category
+        for category in target_categories:
+            # Label Category
+            ws.write(row_idx, 0, category.title(), fmt_label)
+            
+            # Fill DUT Cycles
+            col_idx = 1
+            dut_sum_vals = []
+            for i in range(max_cycles):
+                val = 0.0
+                if i < len(all_dut_loadapk):
+                    cycle_data = all_dut_loadapk[i]
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        # TÍNH TỔNG: Cộng dồn thời gian
+                        val = sum(item.get('dur_ms', 0.0) for item in assets)
+                
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_section_value)
+                if val > 0: dut_sum_vals.append(val)
+                col_idx += 1
+            
+            # DUT Avg
+            dut_avg = sum(dut_sum_vals) / len(dut_sum_vals) if dut_sum_vals else 0.0
+            write_value_or_empty(ws, row_idx, col_idx, dut_avg, fmt_val)
+            col_idx += 1
+
+            # Fill REF Cycles
+            ref_sum_vals = []
+            for i in range(max_cycles):
+                val = 0.0
+                if i < len(all_ref_loadapk):
+                    cycle_data = all_ref_loadapk[i]
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        # TÍNH TỔNG
+                        val = sum(item.get('dur_ms', 0.0) for item in assets)
+                
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_section_value)
+                if val > 0: ref_sum_vals.append(val)
+                col_idx += 1
+            
+            # REF Avg
+            ref_avg = sum(ref_sum_vals) / len(ref_sum_vals) if ref_sum_vals else 0.0
+            write_value_or_empty(ws, row_idx, col_idx, ref_avg, fmt_val)
+            col_idx += 1
+            
+            # Diff
+            if dut_avg > 0 or ref_avg > 0:
+                diff = dut_avg - ref_avg
+                # Format màu sắc nếu chênh lệch lớn
+                fmt = fmt_diff_normal
+                if diff > 50: fmt = fmt_diff_slow
+                elif diff < -50: fmt = fmt_diff_fast
+                write_value_or_empty(ws, row_idx, col_idx, diff, fmt)
+            else:
+                ws.write(row_idx, col_idx, "", fmt_val)
+            
+            row_idx += 1
+
+    
+    # ---------------------------------------------------------
+    # === ABNORMAL SECTION ===
+    # ---------------------------------------------------------
+    row_idx += 1  # Empty separator
+    
+    ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "ABNORMAL", fmt_section_header)
+    row_idx += 1
+    
+    # Abnormal metrics: Uptime, Start reason, Kill reason, Crash count, Compiler
+    abnormal_rows = ["Uptime (minute)", "Start reason", "Kill reason", "Crash count", "Compiler"]
+    
+    for metric in abnormal_rows:
+        ws.write(row_idx, 0, metric, fmt_label)
+        
+        for i in range(max_cycles):
+            # Get DUT abnormal data — [REFACTORED] Đọc từ Precomputed_Extend_Data
+            dut_val = ""
+            if i < len(dut_cycles):
+                dut_cycle = dut_cycles[i]
+                if dut_cycle:
+                    extend_data = dut_cycle.get('Precomputed_Extend_Data', {})
+                    if "Uptime" in metric:
+                        dut_val = extend_data.get('Uptime', "")
+                    elif metric == "Start reason":
+                        dut_val = extend_data.get('Start_Reason', "")
+                    elif metric == "Kill reason":
+                        reasons = extend_data.get('Kill_Reason', [])
+                        dut_val = ", ".join(reasons) if reasons else ""
+                    elif metric == "Crash count":
+                        dut_val = extend_data.get('Crash_Count', "")
+                    elif metric == "Compiler":
+                        dut_val = extend_data.get('Compiler', "")
+            
+            ws.write(row_idx, 1 + i, dut_val, fmt_section_text if isinstance(dut_val, str) else fmt_section_value)
+            
+            # Get REF abnormal data — [REFACTORED] Đọc từ Precomputed_Extend_Data
+            ref_val = ""
+            if i < len(ref_cycles):
+                ref_cycle = ref_cycles[i]
+                if ref_cycle:
+                    extend_data = ref_cycle.get('Precomputed_Extend_Data', {})
+                    if "Uptime" in metric:
+                        ref_val = extend_data.get('Uptime', "")
+                    elif metric == "Start reason":
+                        ref_val = extend_data.get('Start_Reason', "")
+                    elif metric == "Kill reason":
+                        reasons = extend_data.get('Kill_Reason', [])
+                        ref_val = ", ".join(reasons) if reasons else ""
+                    elif metric == "Crash count":
+                        ref_val = extend_data.get('Crash_Count', "")
+                    elif metric == "Compiler":
+                        ref_val = extend_data.get('Compiler', "")
+            
+            ws.write(row_idx, dut_avg_col + 1 + i, ref_val, fmt_section_text if isinstance(ref_val, str) else fmt_section_value)
+        
+        # Avg and Diff are mostly N/A for text fields
+        ws.write(row_idx, dut_avg_col, "", fmt_val)
+        ws.write(row_idx, ref_avg_col, "", fmt_val)
+        ws.write(row_idx, diff_col, "", fmt_val)
+        
+        row_idx += 1
+
+    # ---------------------------------------------------------
+    # === Abnormal Process & Background Activity Table ===
+    # ---------------------------------------------------------
+    row_idx += 3
+
+    # Format riêng cho cột Cycle (Căn giữa dọc và ngang)
+    fmt_cycle_merge = wb.add_format({
+        "bold": True, 
+        "align": "center", 
+        "valign": "vcenter", 
+        "bg_color": "#E0E0E0", 
+        "border": 1, 
+        "border_color": "#000000"
+    })
+
+    # Format header
+    fmt_abnormal_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFCCCB", "border": 1, "border_color": "#000000"})
+    fmt_abnormal_subheader = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFE4E1", "border": 1, "border_color": "#000000"})
+    fmt_abnormal_val = wb.add_format({"align": "left", "border": 1, "border_color": "#000000"})
+    
+    # --- HEADER ROWS ---
+    # Row 1: Header chính "Process start" (Gộp cả DUT và REF)
+    ws.merge_range(row_idx, 0, row_idx, 2, "Process start", fmt_abnormal_header)
+    row_idx += 1
+
+    # Row 2: Sub-headers
+    ws.write(row_idx, 0, "Cycle", fmt_abnormal_subheader)
+    ws.write(row_idx, 1, "DUT", fmt_abnormal_subheader)
+    ws.write(row_idx, 2, "REF", fmt_abnormal_subheader)
+    row_idx += 1
+
+    # --- DATA ROWS PER CYCLE ---
+    max_cycles_abnormal = max(len(dut_cycles), len(ref_cycles))
+
+    for i in range(max_cycles_abnormal):
+        # 1. Thu thập & Gộp danh sách tên Process cho DUT
+        dut_names_set = set()
+        if i < len(dut_cycles) and dut_cycles[i] is not None:
+            # Nguồn 1: Abnormal (bindApplication)
+            abnormal_data = dut_cycles[i].get("Abnormal_Process_Data", [])
+            for p in abnormal_data:
+                proc_name = p.get('proc_name', 'Unknown')
+                dut_names_set.add(f"{proc_name} (start proc)")
+            
+            # Nguồn 2: Background Active (>10ms)
+            bg_data = dut_cycles[i].get("Background_Process_States", [])
+            for p in bg_data:
+                dut_names_set.add(p.get('Thread name', 'Unknown'))
+        
+        sorted_dut_names = sorted(list(dut_names_set))
+
+        # 2. Thu thập & Gộp danh sách tên Process cho REF
+        ref_names_set = set()
+        if i < len(ref_cycles) and ref_cycles[i] is not None:
+            # Nguồn 1: Abnormal
+            abnormal_data = ref_cycles[i].get("Abnormal_Process_Data", [])
+            for p in abnormal_data:
+                proc_name = p.get('proc_name', 'Unknown')
+                ref_names_set.add(f"{proc_name} (start proc)")
+            
+            # Nguồn 2: Background Active
+            bg_data = ref_cycles[i].get("Background_Process_States", [])
+            for p in bg_data:
+                ref_names_set.add(p.get('Thread name', 'Unknown'))
+        
+        sorted_ref_names = sorted(list(ref_names_set))
+
+        # 3. Tính số dòng cần thiết (max giữa DUT và REF)
+        num_rows = max(len(sorted_dut_names), len(sorted_ref_names))
+        if num_rows == 0: num_rows = 1 # Luôn giữ ít nhất 1 dòng cho cycle
+
+        # 4. Ghi cột Cycle (Merge ô nếu có nhiều process)
+        cycle_label = f"Cycle {i + 1}"
+        if num_rows > 1:
+            ws.merge_range(row_idx, 0, row_idx + num_rows - 1, 0, cycle_label, fmt_cycle_merge)
+        else:
+            ws.write(row_idx, 0, cycle_label, fmt_cycle_merge)
+
+        # 5. Ghi dữ liệu từng dòng
+        for r in range(num_rows):
+            # Ghi bên DUT
+            if r < len(sorted_dut_names):
+                ws.write(row_idx, 1, sorted_dut_names[r], fmt_abnormal_val)
+            else:
+                ws.write(row_idx, 1, "", fmt_abnormal_val)
+
+            # Ghi bên REF
+            if r < len(sorted_ref_names):
+                ws.write(row_idx, 2, sorted_ref_names[r], fmt_abnormal_val)
+            else:
+                ws.write(row_idx, 2, "", fmt_abnormal_val)
+            
+            row_idx += 1
+
+    # Set column widths
+    ws.set_column(0, 0, 15) # Cột Cycle
+    ws.set_column(1, 2, 35) # Cột Tên Process (Rộng hơn để hiển thị tên dài)
+
+    
+    # =========================================================================
+    # === Top CPU Usage Tables (Logic: Tiered Matching) ===
+    # =========================================================================
+    row_idx += 3
+
+    # Load Data
+    all_dut_proc = [cycle.get("CPU_Process_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_proc = [cycle.get("CPU_Process_Data", []) if cycle else [] for cycle in ref_cycles]
+    all_dut_thread = [cycle.get("CPU_Thread_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_thread = [cycle.get("CPU_Thread_Data", []) if cycle else [] for cycle in ref_cycles]
+
+    # Formats
+    fmt_cpu_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFE4B5", "border": 1})
+    fmt_cpu_sub = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFF8DC", "border": 1})
+    fmt_cpu_val = wb.add_format({"num_format": "0.000", "align": "center", "border": 1})
+    fmt_cpu_text = wb.add_format({"align": "left", "border": 1})
+    fmt_diff_slow = wb.add_format({"num_format": "0.000", "align": "center", "bg_color": "#FFB3B3", "border": 1})
+    fmt_diff_fast = wb.add_format({"num_format": "0.000", "align": "center", "bg_color": "#B3FFB3", "border": 1})
+    fmt_diff_norm = wb.add_format({"num_format": "0.000", "align": "center", "border": 1})
+
+    max_cycles = max(len(all_dut_proc), len(all_ref_proc))
+
+    for cycle_idx in range(max_cycles):
+        # ---------------------------------------------------------
+        # PREPARE DATA FOR LEFT TABLE (PROCESS) - [IMPROVED TIERED MATCHING]
+        # ---------------------------------------------------------
+        dut_p = all_dut_proc[cycle_idx] if cycle_idx < len(all_dut_proc) else []
+        ref_p = all_ref_proc[cycle_idx] if cycle_idx < len(all_ref_proc) else []
+        
+        # 1. Tạo Lookup Map cho REF
+        ref_by_sql = {}   # Tra cứu nhanh bằng tên SQL
+        ref_by_dump = {}  # Tra cứu nhanh bằng tên Dumpstate
+        
+        for item in ref_p:
+            s_name = item['sql_name']
+            d_name = item.get('dumpstate_name')
+            
+            # Add to SQL Map (Cộng dồn nếu trùng tên do phân mảnh)
+            if s_name not in ref_by_sql:
+                ref_by_sql[s_name] = item.copy()
+            else:
+                ref_by_sql[s_name]['dur_ms'] += item['dur_ms']
+
+            # Add to Dumpstate Map (Chỉ những process có tên mapping mới vào đây)
+            if d_name:
+                if d_name not in ref_by_dump:
+                    ref_by_dump[d_name] = item.copy()
+                else:
+                    ref_by_dump[d_name]['dur_ms'] += item['dur_ms']
+        
+        matched_results = []
+        used_ref_sql_names = set() # Đánh dấu các REF đã được match để không in lại ở phần REF-only
+        
+        # 2. Duyệt DUT và tìm REF tương ứng
+        for dut_item in dut_p:
+            dut_sql = dut_item['sql_name']
+            dut_dump = dut_item.get('dumpstate_name')
+            dut_val = dut_item['dur_ms']
+            
+            ref_val = 0.0
+            display_name = dut_sql # Mặc định dùng tên SQL
+            match_found = False
+            
+            # --- CHECK 1: Match chính xác theo SQL Name ---
+            if not dut_sql.startswith("PID-") and dut_sql in ref_by_sql:
+                ref_item = ref_by_sql[dut_sql]
+                ref_val = ref_item['dur_ms']
+                match_found = True
+
+            # --- CHECK 2: Fallback sang Dumpstate Name ---
+            # Chỉ chạy nếu Check 1 thất bại VÀ DUT có mapping tên thật
+            elif dut_dump and dut_dump in ref_by_dump:
+                ref_item = ref_by_dump[dut_dump]
+                ref_val = ref_item['dur_ms']
+                match_found = True
+                display_name = dut_dump # Hiển thị tên thật cho đẹp
+            
+            # --- CHECK 3: Tên hiển thị ---
+            else:
+                if dut_sql.startswith("PID-") and dut_dump:
+                    display_name = dut_dump
+            
+            # --- TÍNH DIFF (LOGIC MỚI) ---
+            if match_found:
+                # Trường hợp A: Tìm thấy process tương ứng bên REF
+                diff = dut_val - ref_val
+            else:
+                # Trường hợp B: Không tìm thấy bên REF
+                if dut_dump:
+                    # B.1: DUT có dumpstate name (Process được định danh rõ ràng)
+                    # -> Đây là Process Lạ (có trên DUT, không có trên REF)
+                    # -> Diff = DUT (để hiện lên Top)
+                    ref_val = 0.0
+                    diff = dut_val
+                else:
+                    # B.2: DUT KHÔNG có dumpstate name (Thiếu bugreport hoặc PID ảo)
+                    # -> Không đủ bằng chứng là process lạ.
+                    # -> Diff = 0 (để ẩn đi/loại bỏ nhiễu)
+                    ref_val = 0.0
+                    diff = 0.0
+            
+            matched_results.append({
+                'name': display_name,
+                'dut': dut_val,
+                'ref': ref_val,
+                'diff': diff
+            })
+
+        # 3. Sort & Select Top 10
+        top_proc = sorted(matched_results, key=lambda x: x['diff'], reverse=True)[:10]
+
+        # ---------------------------------------------------------
+        # PREPARE DATA FOR RIGHT TABLE (THREAD)
+        # ---------------------------------------------------------
+        dut_t = all_dut_thread[cycle_idx] if cycle_idx < len(all_dut_thread) else []
+        ref_t = all_ref_thread[cycle_idx] if cycle_idx < len(all_ref_thread) else []
+        
+        # Match Thread by (Thread Name, Process Name) vì TID thay đổi
+        merged_t = {}
+        def get_t_key(item): return (item['thread_name'], item['proc_name'])
+        
+        for x in dut_t: merged_t[get_t_key(x)] = {'dut': x['dur_ms'], 'ref': 0.0}
+        for x in ref_t:
+            k = get_t_key(x)
+            if k not in merged_t: merged_t[k] = {'dut': 0.0, 'ref': 0.0}
+            merged_t[k]['ref'] = x['dur_ms']
+            
+        final_thread = []
+        for (tname, pname), v in merged_t.items():
+            # Display name: "Thread (Process)"
+            disp = f"{tname} ({pname})"
+            final_thread.append({'name': disp, 'dut': v['dut'], 'ref': v['ref'], 'diff': v['dut'] - v['ref']})
+            
+        # Sort Diff -> Take Top 10
+        top_thread = sorted(final_thread, key=lambda x: x['diff'], reverse=True)[:10]
+
+        # ---------------------------------------------------------
+        # DRAW HEADERS
+        # ---------------------------------------------------------
+        # Header Left (Process): Cols 0-3 (A-D)
+        ws.merge_range(row_idx, 0, row_idx, 3, f"Top Process CPU - Cycle {cycle_idx+1}", fmt_cpu_header)
+        
+        # Header Right (Thread): Cols 5-8 (F-I) -> Offset 5
+        col_off = 5 
+        ws.merge_range(row_idx, col_off, row_idx, col_off+3, f"Top Thread CPU - Cycle {cycle_idx+1}", fmt_cpu_header)
+        
+        row_idx += 1
+        
+        # Sub-headers Left
+        headers = ["Name", "DUT", "REF", "Diff"]
+        for i, h in enumerate(headers): ws.write(row_idx, i, h, fmt_cpu_sub)
+            
+        # Sub-headers Right
+        for i, h in enumerate(headers): ws.write(row_idx, col_off+i, h, fmt_cpu_sub)
+            
+        row_idx += 1
+        
+        # ---------------------------------------------------------
+        # DRAW DATA ROWS (SIDE BY SIDE)
+        # ---------------------------------------------------------
+        num_rows = max(len(top_proc), len(top_thread))
+        
+        for r in range(num_rows):
+            # --- Draw Left (Process) ---
+            if r < len(top_proc):
+                item = top_proc[r]
+                ws.write(row_idx, 0, item['name'], fmt_cpu_text)
+                write_value_or_empty(ws, row_idx, 1, item['dut'], fmt_cpu_val)
+                write_value_or_empty(ws, row_idx, 2, item['ref'], fmt_cpu_val)
+                
+                diff = item['diff']
+                fmt = fmt_diff_slow if diff > 50 else (fmt_diff_fast if diff < -50 else fmt_diff_norm)
+                write_value_or_empty(ws, row_idx, 3, diff, fmt)
+            else:
+                # Fill borders if empty
+                for c in range(4): ws.write(row_idx, c, "", fmt_cpu_val)
+
+            # --- Draw Right (Thread) ---
+            if r < len(top_thread):
+                item = top_thread[r]
+                ws.write(row_idx, col_off+0, item['name'], fmt_cpu_text)
+                write_value_or_empty(ws, row_idx, col_off+1, item['dut'], fmt_cpu_val)
+                write_value_or_empty(ws, row_idx, col_off+2, item['ref'], fmt_cpu_val)
+                
+                diff = item['diff']
+                fmt = fmt_diff_slow if diff > 50 else (fmt_diff_fast if diff < -50 else fmt_diff_norm)
+                write_value_or_empty(ws, row_idx, col_off+3, diff, fmt)
+            else:
+                for c in range(4): ws.write(row_idx, col_off+c, "", fmt_cpu_val)
+                
+            row_idx += 1
+            
+        row_idx += 1 # Space between cycles
+
+    # Set Column Widths
+    # Process
+    ws.set_column(0, 0, 35) # Process Name
+    ws.set_column(1, 3, 10) # Values
+    
+    # Gap
+    ws.set_column(4, 4, 2)  # Cột E nhỏ lại làm vách ngăn
+    
+    # Thread
+    ws.set_column(5, 5, 40) # Thread Name (Process)
+    ws.set_column(6, 8, 10) # Values
+    
+
+    # ---------------------------------------------------------
+    # === PRIORITY STATICS TABLE (FULL & FINAL) ===
+    # ---------------------------------------------------------
+    row_idx += 3
+    
+    # 1. DEFINING FORMATS
+    # Header chính (Priority Statics) - Màu tím nhạt, chữ đậm, border
+    fmt_prio_main_title = wb.add_format({
+        "bold": True, "align": "center", "valign": "vcenter", 
+        "bg_color": "#D8BFD8", "border": 1, "border_color": "#000000", "font_size": 12
+    })
+    
+    # Header cột (DUT Cy1...)
+    fmt_prio_col_header = wb.add_format({
+        "bold": True, "align": "center", "bg_color": "#E6E6FA", "border": 1, "border_color": "#000000"
+    })
+    
+    # Category Row (bindApplication...) - Merge, bg xám, chữ đen/đậm
+    fmt_prio_cat_merge = wb.add_format({
+        "bold": True, "align": "left", "valign": "vcenter",
+        "bg_color": "#D3D3D3", "font_color": "#000000",
+        "border": 1, "border_color": "#000000"
+    })
+    
+    # Value Cell - Percentage
+    fmt_prio_val = wb.add_format({
+        "num_format": "0.00%", "align": "center", "border": 1, "border_color": "#000000"
+    }) 
+    
+    # Priority Label Cell (120, 98...)
+    fmt_prio_label = wb.add_format({
+        "align": "left", "bold": True, "border": 1, "border_color": "#000000"
+    })
+
+    # Frequency Label Cell (@1800MHz...) - Nghiêng, căn phải
+    fmt_prio_freq_label = wb.add_format({
+        "align": "right", "italic": True, "font_color": "#555555", 
+        "border": 1, "border_color": "#000000"
+    })
+
+    # 2. PREPARE DATA
+    all_dut_prio = [cycle.get("Priority_Data", {}) if cycle else {} for cycle in dut_cycles]
+    all_ref_prio = [cycle.get("Priority_Data", {}) if cycle else {} for cycle in ref_cycles]
+    
+    categories = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
+    
+    # Check if any data exists
+    has_prio_data = False
+    for cycle_data in all_dut_prio + all_ref_prio:
+        if cycle_data: has_prio_data = True; break
+    
+    if has_prio_data:
+        # Xác định cột cuối cùng của bảng
+        last_col = 1 + len(dut_cycles) + len(ref_cycles) - 1 
+        
+        # 3. DRAW MAIN TITLE (MERGED)
+        ws.merge_range(row_idx, 0, row_idx, last_col, "Priority Statics", fmt_prio_main_title)
+        row_idx += 1
+        
+        # 4. DRAW COLUMN HEADERS
+        ws.write(row_idx, 0, "Category/Priority", fmt_prio_col_header)
+        
+        col_idx = 1
+        for i in range(1, len(dut_cycles) + 1):
+            ws.write(row_idx, col_idx, f"DUT Cy{i}", fmt_prio_col_header)
+            col_idx += 1
+        
+        for i in range(1, len(ref_cycles) + 1):
+            ws.write(row_idx, col_idx, f"REF Cy{i}", fmt_prio_col_header)
+            col_idx += 1
+            
+        row_idx += 1
+        
+        # --- Helper Functions ---
+        def parse_prio_key(k_str):
+            """Parse key '120_1800' -> (120, 1800)"""
+            try:
+                if '_' in str(k_str):
+                    p, f = str(k_str).split('_')
+                    return int(p), int(f)
+                return int(k_str), 0
+            except:
+                return 0, 0
+
+        def get_category_total_time(c_data):
+            """Tổng thời gian chạy của cả category (Mẫu số)"""
+            return sum(c_data.values())
+
+        def get_prio_breakdown(c_data, target_prio):
+            """
+            Trả về: (Tổng thời gian của Priority, List các (freq, time) của priority đó)
+            """
+            total_p_time = 0.0
+            freq_list = []
+            for k, v in c_data.items():
+                p, f = parse_prio_key(k)
+                if p == target_prio:
+                    total_p_time += v
+                    if f > 0: # Chỉ add nếu có frequency hợp lệ
+                        freq_list.append((f, v))
+            
+            # Sort freq giảm dần (High freq first)
+            freq_list.sort(key=lambda x: x[0], reverse=True)
+            return total_p_time, freq_list
+
+        # 5. DRAW DATA BY CATEGORY
+        for category in categories:
+            # 5a. Tìm tất cả Priority ID xuất hiện trong Category này
+            all_seen_priorities = set()
+            
+            # Quét toàn bộ DUT và REF để lấy danh sách Priority duy nhất
+            for data_pool in [all_dut_prio, all_ref_prio]:
+                for cycle_data in data_pool:
+                    cat_data = cycle_data.get(category, {})
+                    for key in cat_data.keys():
+                        p_id, _ = parse_prio_key(key)
+                        if p_id > 0: all_seen_priorities.add(p_id)
+            
+            if not all_seen_priorities:
+                continue 
+                
+            sorted_priorities = sorted(list(all_seen_priorities), reverse=True) # Priority cao (số nhỏ) hoặc tùy ý
+            
+            # 5b. Vẽ Category Header (MERGED ROW)
+            ws.merge_range(row_idx, 0, row_idx, last_col, category, fmt_prio_cat_merge)
+            row_idx += 1
+            
+            # 5c. Vẽ từng Priority Group
+            for prio in sorted_priorities:
+                # --- A. DÒNG TỔNG PRIORITY (Vd: 120) ---
+                ws.write(row_idx, 0, str(prio), fmt_prio_label)
+                col_idx = 1
+                
+                # Fill DUT & REF (Total Prio %)
+                for pool in [all_dut_prio, all_ref_prio]:
+                    for i in range(len(dut_cycles)): # Assume symmetric cycle count or check len
+                        val = ""
+                        if i < len(pool):
+                            cycle_data = pool[i].get(category, {})
+                            if cycle_data:
+                                total_run = get_category_total_time(cycle_data)
+                                p_time, _ = get_prio_breakdown(cycle_data, prio)
+                                if total_run > 0 and p_time > 0:
+                                    val = p_time / total_run
+                        
+                        write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
+                        col_idx += 1
+                row_idx += 1
+                
+                # --- B. CÁC DÒNG FREQUENCY CON (Vd: @1800MHz) ---
+                # Tìm tập hợp Frequency của Priority này để vẽ
+                seen_freqs = set()
+                for pool in [all_dut_prio, all_ref_prio]:
+                    for cycle_data in pool:
+                        cat_data = cycle_data.get(category, {})
+                        _, f_list = get_prio_breakdown(cat_data, prio)
+                        for f, _ in f_list: seen_freqs.add(f)
+                
+                sorted_freqs = sorted(list(seen_freqs), reverse=True)
+                
+                for freq in sorted_freqs:
+                    ws.write(row_idx, 0, f"{freq}MHz", fmt_prio_freq_label)
+                    col_idx = 1
+                    
+                    # Fill DUT & REF (Freq %)
+                    for pool in [all_dut_prio, all_ref_prio]:
+                        for i in range(len(dut_cycles)):
+                            val = ""
+                            if i < len(pool):
+                                cycle_data = pool[i].get(category, {})
+                                if cycle_data:
+                                    total_run = get_category_total_time(cycle_data)
+                                    # Construct exact key
+                                    key = f"{prio}_{freq}"
+                                    f_time = cycle_data.get(key, 0.0)
+                                    
+                                    if total_run > 0 and f_time > 0:
+                                        val = f_time / total_run # % đóng góp của Freq này trong Tổng thời gian chạy
+                            
+                            write_value_or_empty(ws, row_idx, col_idx, val, fmt_prio_val)
+                            col_idx += 1
+                    row_idx += 1
+
+
+    # # ---------------------------------------------------------
+    # # === LAYOUT ANALYSIS (UNIQUE SLICES) (NEW) ===
+    # # ---------------------------------------------------------
+    # row_idx += 3
+    
+    # # Formats
+    # fmt_layout_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#FFDAB9", "border": 1, "border_color": "#000000"}) # Peach Puff
+    # fmt_layout_cat = wb.add_format({"bold": True, "align": "left", "bg_color": "#808080", "font_color": "#FFFFFF", "border": 1}) # Dark Grey
+    # fmt_layout_depth = wb.add_format({"bold": True, "align": "left", "indent": 1, "bg_color": "#F0F8FF", "border": 1}) # Alice Blue
+    # fmt_layout_val = wb.add_format({"align": "left", "text_wrap": True, "valign": "top", "border": 1, "font_size": 9}) # Wrap text cho dễ đọc
+
+    # # Prepare Data
+    # all_dut_layout = [cycle.get("Layout_Data", {}) if cycle else {} for cycle in dut_cycles]
+    # all_ref_layout = [cycle.get("Layout_Data", {}) if cycle else {} for cycle in ref_cycles]
+    
+    # layout_cats = ['bindApplication', 'activityStart', 'activityResume', 'Choreographer']
+    # max_depth_check = 6
+    
+    # # Check data exists
+    # has_layout_data = False
+    # for d in all_dut_layout + all_ref_layout:
+    #     if d: has_layout_data = True; break
+        
+    # if has_layout_data:
+    #     # 1. Header Structure
+    #     ws.merge_range(row_idx, 0, row_idx, 0, "Unique Layout Analysis (Set Diff)", fmt_layout_header)
+    #     col_idx = 1
+    #     for i in range(len(dut_cycles)):
+    #         ws.write(row_idx, col_idx, f"DUT Cy{i+1} (Unique)", fmt_layout_header)
+    #         col_idx += 1
+    #     for i in range(len(ref_cycles)):
+    #         ws.write(row_idx, col_idx, f"REF Cy{i+1} (Unique)", fmt_layout_header)
+    #         col_idx += 1
+    #     row_idx += 1
+        
+    #     # 2. Loop Categories
+    #     for cat in layout_cats:
+    #         # Draw Category Header (Merged)
+    #         last_col = 1 + len(dut_cycles) + len(ref_cycles) - 1
+    #         ws.merge_range(row_idx, 0, row_idx, last_col, cat, fmt_layout_cat)
+    #         row_idx += 1
+            
+    #         # 3. Loop Depths
+    #         for depth in range(max_depth_check + 1):
+    #             ws.write(row_idx, 0, f"Depth {depth}", fmt_layout_depth)
+    #             col_idx = 1
+                
+    #             # Để so sánh, ta cần dữ liệu của cả DUT và REF tại cycle i.
+    #             # Giả sử so sánh cặp: DUT Cy1 vs REF Cy1. 
+    #             # Nếu thiếu 1 bên (vd REF không có Cy3), thì bên còn lại coi như Unique toàn bộ.
+                
+    #             # --- FILL DUT COLUMNS ---
+    #             for i in range(len(dut_cycles)):
+    #                 val_str = ""
+    #                 if i < len(all_dut_layout):
+    #                     dut_slices = []
+    #                     if all_dut_layout[i].get(cat):
+    #                         dut_slices = all_dut_layout[i][cat].get(depth, [])
+                        
+    #                     # Lấy REF tương ứng để compare
+    #                     ref_slices = []
+    #                     if i < len(all_ref_layout) and all_ref_layout[i].get(cat):
+    #                         ref_slices = all_ref_layout[i][cat].get(depth, [])
+                            
+    #                     # Logic: DUT Unique = DUT - REF
+    #                     dut_set = set(dut_slices)
+    #                     ref_set = set(ref_slices)
+                        
+    #                     diff = dut_set - ref_set
+                        
+    #                     if diff:
+    #                         # Convert back to list and sort for readability
+    #                         val_str = ", ".join(sorted(list(diff)))
+    #                     elif not dut_set and not ref_set:
+    #                         val_str = "" # Cả 2 đều trống
+    #                     elif not diff:
+    #                         val_str = "" # Giống hệt nhau (hoặc DUT là tập con của REF)
+
+    #                 ws.write(row_idx, col_idx, val_str, fmt_layout_val)
+    #                 col_idx += 1
+                    
+    #             # --- FILL REF COLUMNS ---
+    #             for i in range(len(ref_cycles)):
+    #                 val_str = ""
+    #                 if i < len(all_ref_layout):
+    #                     ref_slices = []
+    #                     if all_ref_layout[i].get(cat):
+    #                         ref_slices = all_ref_layout[i][cat].get(depth, [])
+                            
+    #                     # Lấy DUT tương ứng để compare
+    #                     dut_slices = []
+    #                     if i < len(all_dut_layout) and all_dut_layout[i].get(cat):
+    #                         dut_slices = all_dut_layout[i][cat].get(depth, [])
+                            
+    #                     # Logic: REF Unique = REF - DUT
+    #                     dut_set = set(dut_slices)
+    #                     ref_set = set(ref_slices)
+                        
+    #                     diff = ref_set - dut_set
+                        
+    #                     if diff:
+    #                         val_str = ", ".join(sorted(list(diff)))
+
+    #                 ws.write(row_idx, col_idx, val_str, fmt_layout_val)
+    #                 col_idx += 1
+                
+    #             # Tăng row sau mỗi Depth
+    #             row_idx += 1
+
+    # =============== Top Block I/O Table (MOVED TO POSITION 5) ================
+    row_idx += 3
+    
+    # Formats cho Block I/O table
+    fmt_blockio_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#ADD8E6", "border": 1, "border_color": "#000000"})
+    fmt_blockio_val = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
+    
+    # Thu thập Block I/O data từ tất cả cycles
+    all_dut_block_io = [cycle.get("Block_IO_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_block_io = [cycle.get("Block_IO_Data", []) if cycle else [] for cycle in ref_cycles]
+    
+    # Lấy danh sách tất cả library names xuất hiện
+    all_library_names = set()
+    for cycle_data in all_dut_block_io:
+        for lib in cycle_data:
+            all_library_names.add(lib['libraryName'])
+    for cycle_data in all_ref_block_io:
+        for lib in cycle_data:
+            all_library_names.add(lib['libraryName'])
+    
+    # Nếu không có data, skip
+    if not all_library_names:
+        row_idx += 3  
+    else:
+        # ---------------------------------------------------------
+        # BƯỚC 1: Tính toán Avg và Diff cho từng Library để Sort
+        # ---------------------------------------------------------
+        lib_stats = []
+        for lib_name in all_library_names:
+            # Tính DUT Stats (Lấy timeTotal_ms)
+            dut_times = []
+            for cycle_data in all_dut_block_io:
+                # Tìm library trong cycle này, nếu không có trả về 0.0
+                found_ms = next((item['timeTotal_ms'] for item in cycle_data if item['libraryName'] == lib_name), 0.0)
+                dut_times.append(found_ms)
+            
+            dut_avg = sum(dut_times) / len(dut_times) if dut_times else 0.0
+
+            # Tính REF Stats (Lấy timeTotal_ms)
+            ref_times = []
+            for cycle_data in all_ref_block_io:
+                found_ms = next((item['timeTotal_ms'] for item in cycle_data if item['libraryName'] == lib_name), 0.0)
+                ref_times.append(found_ms)
+            
+            ref_avg = sum(ref_times) / len(ref_times) if ref_times else 0.0
+
+            # Tính Diff
+            diff = dut_avg - ref_avg
+            
+            if (diff > 0):
+                lib_stats.append({
+                'name': lib_name,
+                'dut_times': dut_times,
+                'dut_avg': dut_avg,
+                'ref_times': ref_times,
+                'ref_avg': ref_avg,
+                'diff': diff
+            })
+        # ---------------------------------------------------------
+        # BƯỚC 2: Sort theo Diff giảm dần (Cao xuống thấp)
+        # ---------------------------------------------------------
+        sorted_lib_stats = sorted(lib_stats, key=lambda x: x['diff'], reverse=True)
+
+        # ---------------------------------------------------------
+        # BƯỚC 3: Vẽ Header (Bỏ cột Count, Thêm Avg & Diff)
+        # ---------------------------------------------------------
+        
+        # Merge Header chính
+        # Cấu trúc: Name | DUT Cy... | DUT Avg | REF Cy... | REF Avg | Diff
+        total_cols = 1 + len(dut_cycles) + 1 + len(ref_cycles) + 1 + 1 
+        ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "Top Block I/O Libraries", fmt_blockio_header)
+        
+        row_idx += 1
+        ws.write(row_idx, 0, "Library Name", fmt_blockio_header)
+        
+        col_idx = 1
+        # DUT Headers
+        for i in range(1, len(dut_cycles) + 1):
+            ws.write(row_idx, col_idx, f"DUT Cy{i}", fmt_blockio_header)
+            col_idx += 1
+        ws.write(row_idx, col_idx, "DUT Avg", fmt_blockio_header)
+        col_idx += 1
+        
+        # REF Headers
+        for i in range(1, len(ref_cycles) + 1):
+            ws.write(row_idx, col_idx, f"REF Cy{i}", fmt_blockio_header)
+            col_idx += 1
+        ws.write(row_idx, col_idx, "REF Avg", fmt_blockio_header)
+        col_idx += 1
+        
+        # Diff Header
+        ws.write(row_idx, col_idx, "Diff", fmt_blockio_header)
+
+        # Set width
+        ws.set_column(0, 0, 50)       # Library name rộng hơn
+        ws.set_column(1, col_idx, 12) # Các cột giá trị
+
+        # ---------------------------------------------------------
+        # BƯỚC 4: Ghi Data
+        # ---------------------------------------------------------
+        row_idx += 1
+        for lib in sorted_lib_stats:
+            ws.write(row_idx, 0, lib['name'], fmt_label)
+            col_idx = 1
+            
+            # Write DUT Cycles
+            for val in lib['dut_times']:
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                col_idx += 1
+            
+            # Write DUT Avg
+            write_value_or_empty(ws, row_idx, col_idx, lib['dut_avg'], fmt_blockio_val)
+            col_idx += 1
+            
+            # Write REF Cycles
+            for val in lib['ref_times']:
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                col_idx += 1
+            
+            # Write REF Avg
+            write_value_or_empty(ws, row_idx, col_idx, lib['ref_avg'], fmt_blockio_val)
+            col_idx += 1
+            
+            # Write Diff (Tô màu nếu chênh lệch lớn)
+            diff_val = lib['diff']
+            if diff_val > 50:
+                fmt_diff = fmt_diff_slow
+            elif diff_val < -50:
+                fmt_diff = fmt_diff_fast
+            else:
+                fmt_diff = fmt_diff_normal
+            
+            write_value_or_empty(ws, row_idx, col_idx, diff_val, fmt_diff)
+            
+            row_idx += 1
+    
+    
+    # ---------------------------------------------------------
+    # === LoadApkAssets Table (UPDATED FOR CATEGORIES) ===
+    # ---------------------------------------------------------
+    row_idx += 3
+
+    # Thu thập data từ tất cả cycles
+    # Lưu ý: Mỗi cycle data bây giờ là Dict {'system_server': [], 'system_ui': [], ...}
+    all_dut_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in dut_cycles]
+    all_ref_loadapk = [cycle.get("LoadApkAsset_Data", {}) if cycle else {} for cycle in ref_cycles]
+
+    # Các category cần hiển thị theo thứ tự
+    target_categories = ["system_server", "system_ui", "launching_app"]
+
+    # Kiểm tra xem có dữ liệu nào không để quyết định vẽ bảng
+    has_data = False
+    for cycle_data in all_dut_loadapk + all_ref_loadapk:
+        if not isinstance(cycle_data, dict): continue # Skip nếu data cũ/lỗi
+        for cat in target_categories:
+            if cycle_data.get(cat):
+                has_data = True
+                break
+        if has_data: break
+
+    if has_data:
+        # === HEADER ROW ===
+        ws.merge_range(row_idx, 0, row_idx, 0, "LoadApkAssets (>50ms)", fmt_blockio_header)
+        
+        col_idx = 1
+        for i in range(1, len(dut_cycles) + 1):
+            ws.write(row_idx, col_idx, f"DUT Cycle {i}", fmt_blockio_header)
+            col_idx += 1
+        
+        for i in range(1, len(ref_cycles) + 1):
+            ws.write(row_idx, col_idx, f"REF Cycle {i}", fmt_blockio_header)
+            col_idx += 1
+        
+        # === SUB-HEADER ROW ===
+        row_idx += 1
+        ws.write(row_idx, 0, "Category / Asset Name", fmt_blockio_header)
+        
+        col_idx = 1
+        for _ in range(len(dut_cycles)):
+            ws.write(row_idx, col_idx, "(ms)", fmt_blockio_header)
+            col_idx += 1
+        for _ in range(len(ref_cycles)):
+            ws.write(row_idx, col_idx, "(ms)", fmt_blockio_header)
+            col_idx += 1
+        
+        ws.set_column(0, 0, 50)
+        
+        # === DATA ROWS ===
+        row_idx += 1
+
+        for category in target_categories:
+            # 1. Thu thập tất cả tên Asset trong category này từ mọi cycle
+            cat_asset_names = set()
+            for cycle_data in all_dut_loadapk + all_ref_loadapk:
+                if isinstance(cycle_data, dict):
+                    assets = cycle_data.get(category, [])
+                    for a in assets:
+                        cat_asset_names.add(a['name'])
+            
+            sorted_assets = sorted(list(cat_asset_names))
+
+            if not sorted_assets:
+                continue
+
+            # 2. Hiển thị tên Category (In đậm, Background màu tối hoặc khác biệt)
+            # Merge hết các cột để làm tiêu đề ngăn cách
+            total_cols_table = 1 + len(dut_cycles) + len(ref_cycles)
+            ws.merge_range(row_idx, 0, row_idx, total_cols_table - 1, category.title(), fmt_section_header)
+            row_idx += 1
+
+            # 3. Vẽ từng Asset trong category đó
+            for asset_name in sorted_assets:
+                ws.write(row_idx, 0, asset_name, fmt_label)
+                col_idx = 1
+
+                # Fill DUT Cycles
+                for cycle_data in all_dut_loadapk:
+                    val = ""
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        found_item = next((x for x in assets if x['name'] == asset_name), None)
+                        if found_item:
+                            val = found_item['dur_ms']
+                    
+                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                    col_idx += 1
+                
+                # Fill REF Cycles
+                for cycle_data in all_ref_loadapk:
+                    val = ""
+                    if isinstance(cycle_data, dict):
+                        assets = cycle_data.get(category, [])
+                        found_item = next((x for x in assets if x['name'] == asset_name), None)
+                        if found_item:
+                            val = found_item['dur_ms']
+                    
+                    write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                    col_idx += 1
+                
+                row_idx += 1
+
+    # ---------------------------------------------------------
+    # === Statistics Table (Binder Transaction, etc.) ===
+    # ---------------------------------------------------------
+    row_idx += 3
+    
+    # Thu thập Binder Transaction data từ tất cả cycles
+    all_dut_binder = [cycle.get("Binder_Transaction_Data", {}) if cycle else {} for cycle in dut_cycles]
+    # print("all_dut_binder", all_dut_binder)
+    all_ref_binder = [cycle.get("Binder_Transaction_Data", {}) if cycle else {} for cycle in ref_cycles]
+    
+    # Format cho Statistics table
+    fmt_stats_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#E6E6FA", "border": 1, "border_color": "#000000"})
+    fmt_stats_subheader = wb.add_format({"bold": True, "align": "center", "bg_color": "#F0E68C", "border": 1, "border_color": "#000000"})
+    fmt_stats_val = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
+    fmt_stats_count = wb.add_format({"num_format": "0", "align": "center", "border": 1, "border_color": "#000000"})
+    fmt_stats_empty = wb.add_format({"align": "center", "border": 1, "border_color": "#000000"})
+    
+    # Header row
+    ws.merge_range(row_idx, 0, row_idx, 0, "Thống kê", fmt_stats_header)
+    
+    col_idx = 1
+    # DUT cycles headers (merge 2 columns for each: Dur + Count)
+    for i in range(1, len(dut_cycles) + 1):
+        ws.merge_range(row_idx, col_idx, row_idx, col_idx + 1, f"DUT Cycle {i}", fmt_stats_header)
+        col_idx += 2
+    
+    # Avg DUT header
+    ws.merge_range(row_idx, col_idx, row_idx, col_idx + 1, "Avg DUT", fmt_stats_header)
+    col_idx += 2
+    
+    # REF cycles headers
+    for i in range(1, len(ref_cycles) + 1):
+        ws.merge_range(row_idx, col_idx, row_idx, col_idx + 1, f"REF Cycle {i}", fmt_stats_header)
+        col_idx += 2
+    
+    # Avg REF header
+    ws.merge_range(row_idx, col_idx, row_idx, col_idx + 1, "Avg REF", fmt_stats_header)
+    col_idx += 2
+    
+    # Diff header
+    ws.merge_range(row_idx, col_idx, row_idx, col_idx + 1, "Diff", fmt_stats_header)
+    
+    # Sub-header row (Dur | Count pattern)
+    row_idx += 1
+    ws.write(row_idx, 0, "Name", fmt_stats_subheader)
+    
+    col_idx = 1
+    # DUT cycles sub-headers
+    for i in range(len(dut_cycles)):
+        ws.write(row_idx, col_idx, "Dur", fmt_stats_subheader)
+        ws.write(row_idx, col_idx + 1, "Count", fmt_stats_subheader)
+        col_idx += 2
+    
+    # Avg DUT sub-headers
+    ws.write(row_idx, col_idx, "Dur", fmt_stats_subheader)
+    ws.write(row_idx, col_idx + 1, "Count", fmt_stats_subheader)
+    col_idx += 2
+    
+    # REF cycles sub-headers
+    for i in range(len(ref_cycles)):
+        ws.write(row_idx, col_idx, "Dur", fmt_stats_subheader)
+        ws.write(row_idx, col_idx + 1, "Count", fmt_stats_subheader)
+        col_idx += 2
+    
+    # Avg REF sub-headers
+    ws.write(row_idx, col_idx, "Dur", fmt_stats_subheader)
+    ws.write(row_idx, col_idx + 1, "Count", fmt_stats_subheader)
+    col_idx += 2
+    
+    # Diff sub-headers
+    ws.write(row_idx, col_idx, "Dur", fmt_stats_subheader)
+    ws.write(row_idx, col_idx + 1, "Count", fmt_stats_subheader)
+    
+    # Data row: binder transaction
+    row_idx += 1
+    ws.write(row_idx, 0, "binder transaction", fmt_label)
+    
+    col_idx = 1
+    
+    # DUT cycles data
+    dut_dur_values = []
+    dut_count_values = []
+    for binder_data in all_dut_binder:
+        dur = binder_data.get('duration_ms', 0.0)
+        count = binder_data.get('count', 0)
+        
+        write_value_or_empty(ws, row_idx, col_idx, dur, fmt_stats_val)
+        ws.write(row_idx, col_idx + 1, count if count > 0 else "", fmt_stats_count)
+        
+        dut_dur_values.append(dur)
+        dut_count_values.append(count)
+        col_idx += 2
+    
+    # Avg DUT - Only calculate average with columns that have values (non-zero)
+    valid_dut_dur = [v for v in dut_dur_values if v > 0]
+    valid_dut_count = [v for v in dut_count_values if v > 0]
+    avg_dut_dur = sum(valid_dut_dur) / len(valid_dut_dur) if valid_dut_dur else 0.0
+    avg_dut_count = sum(valid_dut_count) / len(valid_dut_count) if valid_dut_count else 0.0
+    
+    write_value_or_empty(ws, row_idx, col_idx, avg_dut_dur, fmt_stats_val)
+    ws.write(row_idx, col_idx + 1, int(avg_dut_count) if avg_dut_count > 0 else "", fmt_stats_count)
+    col_idx += 2
+    
+    # REF cycles data
+    ref_dur_values = []
+    ref_count_values = []
+    for binder_data in all_ref_binder:
+        dur = binder_data.get('duration_ms', 0.0)
+        count = binder_data.get('count', 0)
+        
+        write_value_or_empty(ws, row_idx, col_idx, dur, fmt_stats_val)
+        ws.write(row_idx, col_idx + 1, count if count > 0 else "", fmt_stats_count)
+        
+        ref_dur_values.append(dur)
+        ref_count_values.append(count)
+        col_idx += 2
+    
+    # Avg REF - Only calculate average with columns that have values (non-zero)
+    valid_ref_dur = [v for v in ref_dur_values if v > 0]
+    valid_ref_count = [v for v in ref_count_values if v > 0]
+    avg_ref_dur = sum(valid_ref_dur) / len(valid_ref_dur) if valid_ref_dur else 0.0
+    avg_ref_count = sum(valid_ref_count) / len(valid_ref_count) if valid_ref_count else 0.0
+    
+    write_value_or_empty(ws, row_idx, col_idx, avg_ref_dur, fmt_stats_val)
+    ws.write(row_idx, col_idx + 1, int(avg_ref_count) if avg_ref_count > 0 else "", fmt_stats_count)
+    col_idx += 2
+    
+    # Diff (DUT - REF)
+    diff_dur = avg_dut_dur - avg_ref_dur
+    diff_count = int(avg_dut_count - avg_ref_count)
+    
+    write_value_or_empty(ws, row_idx, col_idx, diff_dur, fmt_stats_val)
+    ws.write(row_idx, col_idx + 1, diff_count if diff_count != 0 else "", fmt_stats_count)
+    
+    # Set column widths for statistics table
+    ws.set_column(0, 0, 30)
+    ws.set_column(1, col_idx + 1, 10)
+

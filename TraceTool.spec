@@ -55,7 +55,18 @@ a = Analysis(
     datas=added_datas + encodings_datas,  
     hiddenimports=[
     'execution_sql', 'reaction_sql', 'memory_main', 'pageboost_main',
-    'sql_query', 'utils.trace.atracetosystrace',
+    # sql_query package (refactored from monolithic sql_query.py)
+    'sql_query', 'sql_query.base', 'sql_query.analysis',
+    'sql_query.sequence_queries', 'sql_query.block_io',
+    'sql_query.cpu_queries', 'sql_query.loadapk_asset',
+    'sql_query.binder_transaction',
+    # execution package (refactored from monolithic execution_sql.py)
+    'execution', 'execution.config', 'execution.main',
+    'execution.processor', 'execution.excel_output',
+    'execution.excel_sheet', 'execution.json_output',
+    # reaction package (refactored from monolithic reaction_sql.py)
+    'reaction', 'reaction.analyzer', 'reaction.excel_output', 'reaction.main',
+    'utils.trace.atracetosystrace',
     # MemoryStatus modules
     'MemoryStatus', 'MemoryStatus.memory_main', 'MemoryStatus.abnormal_memory',
     'MemoryStatus.app_start_kill_analyzer', 'MemoryStatus.analyze_pss',
