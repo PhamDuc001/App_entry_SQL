@@ -1,4 +1,5 @@
 from sql_query.base import *
+from sql_query.trace_queries import *
 from sql_query.sequence_queries import *
 from sql_query.loadapk_asset import *
 from sql_query.cpu_queries import *
