@@ -193,9 +193,6 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     print(f" COMPLETED in {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
     print("=" * 70)
 
-# ---------------------------------------------------------------------------
-# Standalone Execution
-# ---------------------------------------------------------------------------
 
 def main():
     import argparse

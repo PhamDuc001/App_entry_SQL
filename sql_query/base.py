@@ -398,7 +398,5 @@ def get_reaction_choreographer(tp: TraceProcessor, sysui_pid: int) -> Optional[T
 
     row = df.iloc[0]
     return int(row['ts']), int(row['dur']), int(row['end_ts'])
-# -------------------------------------------------------------------
-# 4. COMPLEX QUERIES (Giữ nguyên logic phức tạp)
-# -------------------------------------------------------------------
+
 

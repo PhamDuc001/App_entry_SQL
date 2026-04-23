@@ -283,7 +283,4 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8, targe
     return cleaned
 
 
-# ---------------------------------------------------------------------------
-# Excel Output
-# ---------------------------------------------------------------------------
 

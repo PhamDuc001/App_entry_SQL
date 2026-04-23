@@ -148,18 +148,9 @@ CACHE_VERSION = "1.0"  # Tăng lên "1.1", "2.0"...
 # CRITICAL: Set environment variables TRƯỚC KHI import bất cứ thứ gì
 os.environ['NUMPY_EXPERIMENTAL_ARRAY_FUNCTION'] = '0'
 
-# [THÊM 2 DÒNG NÀY VÀO ĐÂY] - Ép Python kết nối thẳng vào localhost, bỏ qua Proxy/VPN
+# Ép Python kết nối thẳng vào localhost, bỏ qua Proxy/VPN
 os.environ['NO_PROXY'] = '127.0.0.1,localhost'
 os.environ['no_proxy'] = '127.0.0.1,localhost'
 
-# ---------------------------------------------------------------------------
-# Helper functions and analyze_trace 
-# ---------------------------------------------------------------------------
 
-
-# ---------------------------------------------------------------------------
-# Batch Processing Logic
-# ---------------------------------------------------------------------------
-
-# skip_apps = ['sip', 'menu', 'dial']
 
