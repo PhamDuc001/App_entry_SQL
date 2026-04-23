@@ -1,6 +1,6 @@
 from sql_query.base import to_ms, query_df, ensure_slice_with_names_view, find_slice
-from sql_query.block_io import top_block_IO, process_block_io_data, get_kernel_block_io, get_camera_hal_pid, get_hal_library_block_io, process_hal_block_io_data
-from sql_query.loadapk_asset import get_system_pids, get_loadApkAsset, process_loadapk_data
+from sql_query.block_io import top_block_IO, process_block_io_data, get_kernel_block_io, get_hal_library_block_io, process_hal_block_io_data
+from sql_query.loadapk_asset import get_system_pids, get_loadApkAsset, process_loadapk_data, get_camera_hal_pid
 from sql_query.cpu_queries import get_top_cpu_usage_process, process_cpu_data_process, get_top_cpu_usage_thread, process_cpu_data_thread
 from sql_query.binder_transaction import get_binder_transaction
 from perfetto.trace_processor.api import TraceProcessor
@@ -16,6 +16,7 @@ __all__ = [
     'process_abnormal_data',
     'get_background_process_states',
     '_query_end_ts_dependent_data',
+    'get_layout_depth_slices',
 ]
 
 def get_thread_state_summary(tp: TraceProcessor, app_tid: int,
@@ -289,7 +290,7 @@ def _query_end_ts_dependent_data(
     kernel_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time, trace_path=trace_path)
 
     # ========================================================
-    # [3] MỚI: Block I/O tầng Library (Camera HAL Process)
+    # [3] Block I/O tầng Library (Camera HAL Process)
     # ========================================================
     hal_block_io = []
     hal_pid = get_camera_hal_pid(tp) # Gọi hàm tìm PID ở câu trước
@@ -348,9 +349,40 @@ def _query_end_ts_dependent_data(
     
     return data
 
+# ===================== Layout depth ================================
+
+def get_layout_depth_slices(tp: TraceProcessor, tid: int, start_ts: int, end_ts: int, max_depth: int = 6) -> Dict[int, List[str]]:
+    """
+    Lay danh sach cac Slice Name tren Main Thread, phan nhom theo Depth.
+    """
+    if not tid or not start_ts or not end_ts or start_ts >= end_ts:
+        return {}
+
+    sql = f"""
+    SELECT DISTINCT s.name, s.depth
+    FROM slice s
+    JOIN thread_track tt ON s.track_id = tt.id
+    JOIN thread t ON tt.utid = t.utid
+    WHERE t.tid = {tid}
+    AND s.ts + s.dur >= {start_ts} 
+    AND s.ts <= {end_ts}
+    AND s.depth <= {max_depth}
+    ORDER BY s.depth, s.ts
+    """
+    
+    df = query_df(tp, sql)
+    
+    result = {d: [] for d in range(max_depth + 1)}
+    
+    if df is not None and not df.empty:
+        for _, row in df.iterrows():
+            depth = int(row['depth'])
+            name = str(row['name'])
+            
+            if depth <= max_depth:
+                result[depth].append(name)
+                
+    return result
 
 
-# [File: sql_query.py]
-
-# [File: sql_query.py]
 

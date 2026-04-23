@@ -4,6 +4,12 @@ from typing import Dict, Optional, Any, Tuple, List
 from collections import defaultdict
 import pandas as pd
 
+# ==============================================================
+# ==============Get top CPU by Process and Thread===============
+# ==============================================================
+# --- 1. Query cho Process (Group by Process Name) ---
+
+# --- 1. Query cho Process (Group by PID/Process Name) ---
 def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int, cpu_cores: List[int]):
     # print(f"StartTime =  {start_time}, Duration = {dur_time}")
     """
@@ -52,8 +58,6 @@ def get_top_cpu_usage_process(tp: TraceProcessor, start_time: int, dur_time: int
     df = query_df(tp, sql)
     tp.query("DROP TABLE IF EXISTS target_proc; DROP VIEW IF EXISTS intervals_proc; DROP VIEW IF EXISTS cpu_view_proc;")
     return df
-
-# [File: sql_query.py]
 
 def process_cpu_data_process(df, pid_mapping: Dict[int, str] = None) -> List[Dict[str, Any]]:
     """
@@ -141,11 +145,7 @@ def process_cpu_data_thread(df) -> List[Dict[str, Any]]:
         'dur_percent': float(row['dur_percent'])
     } for _, row in df.iterrows()]
 
-
-
-
-
-
+# --- 3. Query cho CPU Core ---
 def get_priority_distribution(tp: TraceProcessor, tid: int, start_ts: int, end_ts: int) -> Dict[str, float]:
     """
     Tính thống kê Priority và Frequency.
@@ -253,49 +253,4 @@ def get_priority_distribution(tp: TraceProcessor, tid: int, start_ts: int, end_t
     tp.query("DROP TABLE IF EXISTS prio_span_simple; DROP VIEW IF EXISTS target_sched; DROP VIEW IF EXISTS span_window;")
     
     return result
-# -------------------------------------------------------------------
-# ===================== Layout depth ================================
-# -------------------------------------------------------------------
-
-def get_layout_depth_slices(tp: TraceProcessor, tid: int, start_ts: int, end_ts: int, max_depth: int = 6) -> Dict[int, List[str]]:
-    """
-    Lấy danh sách các Slice Name trên Main Thread, phân nhóm theo Depth.
-    [FIXED] Join thêm bảng thread để lọc theo tid.
-    """
-    if not tid or not start_ts or not end_ts or start_ts >= end_ts:
-        return {}
-
-    # Query lấy name và depth
-    # Logic: slice -> thread_track -> thread (để check tid)
-    sql = f"""
-    SELECT DISTINCT s.name, s.depth
-    FROM slice s
-    JOIN thread_track tt ON s.track_id = tt.id
-    JOIN thread t ON tt.utid = t.utid
-    WHERE t.tid = {tid}
-    AND s.ts + s.dur >= {start_ts} 
-    AND s.ts <= {end_ts}
-    AND s.depth <= {max_depth}
-    ORDER BY s.depth, s.ts
-    """
-    
-    df = query_df(tp, sql)
-    
-    result = {d: [] for d in range(max_depth + 1)}
-    
-    if df is not None and not df.empty:
-        for _, row in df.iterrows():
-            depth = int(row['depth'])
-            name = str(row['name'])
-            
-            if depth <= max_depth:
-                # Có thể filter bớt các slice quá ngắn hoặc không quan trọng ở đây nếu muốn
-                result[depth].append(name)
-                
-    return result
-
-
-# -------------------------------------------------------------------
-# ===================== blk_io_schedule ================================
-# -------------------------------------------------------------------
 

@@ -59,7 +59,7 @@ a = Analysis(
     'sql_query', 'sql_query.base', 'sql_query.analysis',
     'sql_query.sequence_queries', 'sql_query.block_io',
     'sql_query.cpu_queries', 'sql_query.loadapk_asset',
-    'sql_query.binder_transaction',
+    'sql_query.binder_transaction', 'sql_query.trace_queries',
     # execution package (refactored from monolithic execution_sql.py)
     'execution', 'execution.config', 'execution.main',
     'execution.processor', 'execution.excel_output',

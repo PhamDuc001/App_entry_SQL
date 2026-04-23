@@ -114,10 +114,7 @@ def process_loadapk_data(df, app_pid: int, sys_pids: Dict[str, int]) -> Dict[str
                 result['launching_app'].append(item)
             
     return result
-# ==============================================================
-# ==============Get top CPU by Process and Thread===============
-# ==============================================================
-# --- 1. Query cho Process (Group by Process Name) ---
+
 def get_pid_list(tp: TraceProcessor) -> List[int]:
     """Lấy PID system_server, systemui, surfaceflinger."""
     sql = """
@@ -130,6 +127,21 @@ def get_pid_list(tp: TraceProcessor) -> List[int]:
     if df is None:
         return []
     return df["pid"].tolist()
+
+def get_camera_hal_pid(tp: TraceProcessor) -> Optional[int]:
+    """
+    Tim PID cua tien trinh Camera HAL dua tren slice dac trung.
+    """
+    sql = """
+    SELECT pid
+    FROM slice_with_names
+    WHERE name LIKE '%camera3->process_capture_request%'
+    LIMIT 1;
+    """
+    df = query_df(tp, sql)
+    if df is not None and not df.empty:
+        return int(df.iloc[0]['pid'])
+    return None
 
 def get_pid_systemUI(tp: TraceProcessor):
     """Systemui PID"""
