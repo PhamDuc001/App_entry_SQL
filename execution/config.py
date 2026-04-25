@@ -44,7 +44,7 @@ import pickle
 import traceback
 
 from perfetto.trace_processor.api import TraceProcessor, TraceProcessorConfig
-from sql_query import *
+from sql_query.base import get_resource_path
 from utils.trace.atracetosystrace import convert_trace
 from multiprocessing import Pool, cpu_count
 from dumpstate_parser import (

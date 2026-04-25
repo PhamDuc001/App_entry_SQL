@@ -21,7 +21,15 @@ import traceback
 import xlsxwriter
 from perfetto.trace_processor.api import TraceProcessor, TraceProcessorConfig
 
-from sql_query import *
+from sql_query.base import to_ms, get_resource_path, ensure_slice_with_names_view
+from sql_query.trace_queries import (
+    detect_app_from_launch, find_app_process,
+    get_first_deliver_input, get_end_deliver_input,
+    get_launcher_pid, get_addStartingWindow,
+    get_drawFrame, get_onTransactionReady,
+    get_reaction_choreographer,
+)
+from sql_query.loadapk_asset import get_pid_systemUI
 # from atracetosystrace import convert_trace
 
 # ---------------------------------------------------------------------------
