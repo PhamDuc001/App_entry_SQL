@@ -1082,7 +1082,7 @@ def create_sheet(
                     p, f = str(k_str).split('_')
                     return int(p), int(f)
                 return int(k_str), 0
-            except:
+            except (ValueError, TypeError):
                 return 0, 0
 
         def get_category_total_time(c_data):
