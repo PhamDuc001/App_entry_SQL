@@ -32,63 +32,20 @@ from sql_query.trace_queries import (
 from sql_query.loadapk_asset import get_pid_systemUI
 # from atracetosystrace import convert_trace
 
+# Import shared config — Single source of truth
+from shared.config import (
+    APP_MAPPING, TARGET_APPS_REACTION, CACHE_VERSION,
+    get_trace_processor_bin
+)
+
 # ---------------------------------------------------------------------------
 # Configuration & Constants
 # ---------------------------------------------------------------------------
-# TRACE_PROCESSOR_BIN = r"D:\Tools\CheckList\Bringup\Plan_convert_SQL\perfetto\trace_processor"
-if sys.platform == "win32":
-    TP_FILENAME = "trace_processor.exe"
-else:
-    TP_FILENAME = "trace_processor"
-
-# Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
-# Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
-#==============================================================
-TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
-
-APP_MAPPING = {
-    "comsamsungperformancehelloworld_v6": "Helloworld",
-    "comsamsungandroiddialer": "Dial",
-    "comsecandroidappclockpackage": "Clock",
-    "comsecandroidappcamera": "Camera",
-    "comsamsungandroidappcontacts": "Contacts",
-    "comsamsungandroidcalendar": "Calendar",
-    "comsecandroidapppopupcalculator": "Calculator",
-    "com.sec.android.gallery3d": "Gallery",
-    "comsamsungandroidmessaging": "Messages",
-    "comsecandroidappmyfiles": "MyFiles",
-    "comexampleedittexttest3": "SIP",
-    "comsecandroidappsbrowser": "Internet",
-    "comsamsungandroidappnotes": "Notes",
-    "comandroidsettings": "Settings",
-    "comsecandroidappvoicenote": "VoiceNote",
-    "comgoogleandroidappsmessaging": "Messages",
-}
+# Trace Processor Binary (Reaction dùng Build mode theo code cũ)
+TRACE_PROCESSOR_BIN = get_trace_processor_bin(mode="build")
 
 # skip_apps = ['sip', 'menu', 'dial']
-TARGET_APPS = [
-    "camera",
-    "helloworld",
-    "calllog",
-    "clock",
-    "contact",
-    "calendar",
-    "calculator",
-    "gallery",
-    "message",
-    "menu",
-    "myfile",
-    "sip",
-    "internet",
-    "note",
-    "setting",
-    "voice",
-    "recent"
-]
-
-CACHE_VERSION = "1.0"  # Reaction cache version
+TARGET_APPS = TARGET_APPS_REACTION
 
 # ---------------------------------------------------------------------------
 # Analysis Logic (Reaction Specific)

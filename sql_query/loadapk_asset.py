@@ -81,7 +81,7 @@ def process_loadapk_data(df, app_pid: int, sys_pids: Dict[str, int]) -> Dict[str
     for _, row in df.iterrows():
         try:
             pid = int(row['pid'])
-        except:
+        except (ValueError, TypeError):
             continue
             
         dur_ms = row['dur'] / 1000000.0
