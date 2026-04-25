@@ -92,7 +92,7 @@ def find_largest_txt_in_folder(folder_path: str) -> Optional[str]:
             if size > largest_size:
                 largest_size = size
                 largest_file = txt_file
-        except:
+        except OSError:
             continue
     
     if largest_file:
@@ -336,7 +336,7 @@ def _extract_timestamp_val(filename: str) -> int:
     if len(matches) >= 2:
         try:
             return int(matches[-2] + matches[-1])
-        except:
+        except (ValueError, TypeError):
             pass
     if matches:
         return int(matches[-1])

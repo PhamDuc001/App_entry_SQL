@@ -24,7 +24,7 @@ def get_ram_size(dumpstate_content):
                 if (ram_size + 1) <= ram:
                     ram_size = ram
                     break
-        except:
+        except (ValueError, TypeError):
             ram_size = 0
     else:
         ram_size = 8 # Default
@@ -293,7 +293,7 @@ def create_pss_excel_report(pss_data, excel_output_file):
             try:
                 if len(str(cell.value)) > max_length:
                     max_length = len(str(cell.value))
-            except:
+            except (TypeError, AttributeError):
                 pass
         adjusted_width = (max_length + 2)
         ws.column_dimensions[column_letter].width = adjusted_width
