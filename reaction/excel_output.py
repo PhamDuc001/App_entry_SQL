@@ -1,11 +1,5 @@
 from reaction.analyzer import *
-
-def write_value_or_empty(ws, row, col, value, fmt):
-    """Helper: Ghi giá trị vào Excel, nếu 0.0 hoặc rỗng thì để trắng."""
-    if value == 0.0 or value == "" or value is None:
-        ws.write(row, col, "", fmt)
-    else:
-        ws.write(row, col, value, fmt)
+from shared.excel_utils import write_value_or_empty
 
 def create_excel_output(
     dut_results: Dict[str, Dict[str, List[Dict[str, Any]]]],

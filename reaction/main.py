@@ -1,39 +1,6 @@
 from reaction.analyzer import *
 from reaction.excel_output import create_excel_output
-
-def collect_trace_files(folder_path: str) -> List[str]:
-    """Helper: Collect file .log trong folder"""
-    folder = Path(folder_path)
-    if not folder.exists() or not folder.is_dir():
-        return []
-    return sorted([str(f) for f in folder.glob("*.log")])
-
-def extract_version_and_model(file_path: str) -> Tuple[str, str]:
-    """
-    Extract version và model từ tên file trace đầu tiên
-    Ví dụ: A166B-YLJ-4GB-BOS-TEST_ZC5_251226.log
-    -> model: A166B, version: ZC5
-    """
-    if not file_path:
-        return "", ""
-    
-    filename = Path(file_path).stem
-    parts = filename.split('_')
-    
-    if len(parts) >= 2:
-        # Model là phần đầu tiên trước dấu '-'
-        model_part = parts[0]
-        model = model_part.split('-')[0] if '-' in model_part else model_part
-        
-        # Version là phần thứ hai từ cuối lên (phần trước timestamp)
-        version = parts[-2] if len(parts) >= 3 else parts[-1]
-        # Nếu version có chứa '-', lấy phần trước dấu '-'
-        version = version.split('-')[0] if '-' in version else version
-        return model, version
-    
-    return "", ""
-
-# ... (phần đầu file giữ nguyên) ...
+from shared.trace_utils import collect_trace_files, extract_device_info
 
 # ---------------------------------------------------------------------------
 # Cache System for Reaction Mode
@@ -145,59 +112,11 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     print(f"\n[2/2] Processing REF folder...")
     ref_res = get_or_process_folder_with_cache(ref_folder, "REF", num_workers, target_apps)
 
-    # 2. Extract Header Title từ file đầu tiên của DUT
-    header_title = "Reaction Metric" # Default
-    dut_files = collect_trace_files(dut_folder)
-    if dut_files:
-        first_file = Path(dut_files[0]).stem
-        parts = first_file.split("_")
-        if len(parts) >= 2:
-            header_title = f"{parts[0]}_{parts[1]}"
-        else:
-            header_title = first_file
-
-    # 3. Extract DUT/REF model và version từ tên file trace đầu tiên
-    dut_version = ""
-    dut_model = ""
-    ref_version = ""
-    ref_model = ""
+    # 2. Extract device info from DUT and REF folders
+    dut_model, dut_version, header_title = extract_device_info(dut_folder)
+    ref_model, ref_version, _ = extract_device_info(ref_folder)
     
-    if dut_files:
-        first_file = Path(dut_files[0]).stem
-        parts = first_file.split("_")
-        if parts:
-            # Extract model và version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
-            model_part = parts[0]
-            if '-' in model_part:
-                model_version = model_part.split('-')[0]  # A166B
-                version_part = model_part.split('-')[1]   # ZD7
-                dut_model = model_version
-                dut_version = version_part
-            else:
-                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
-                if len(model_part) >= 3:
-                    dut_version = model_part[-3:]
-                    dut_model = model_part[:-3].rstrip('-')
-    
-    ref_files = collect_trace_files(ref_folder)
-    if ref_files:
-        first_ref_file = Path(ref_files[0]).stem
-        parts = first_ref_file.split("_")
-        if parts:
-            # Extract model và version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
-            model_part = parts[0]
-            if '-' in model_part:
-                model_version = model_part.split('-')[0]  # A166B
-                version_part = model_part.split('-')[1]   # ZD7
-                ref_model = model_version
-                ref_version = version_part
-            else:
-                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
-                if len(model_part) >= 3:
-                    ref_version = model_part[-3:]
-                    ref_model = model_part[:-3].rstrip('-')
-    
-    # 4. Generating Excel
+    # 3. Generating Excel
     print("\n[3/3] Creating Excel files...")
     create_excel_output(dut_res, ref_res, dut_folder, header_title, dut_model, dut_version, ref_version)
     print("\nDone.")

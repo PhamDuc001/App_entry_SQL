@@ -1,7 +1,8 @@
 from execution.config import *
-from execution.processor import process_all_traces, collect_trace_files
+from execution.processor import process_all_traces
 from execution.excel_output import create_excel_output
-from execution.json_output import export_avg_to_json, extract_device_code
+from execution.json_output import export_avg_to_json
+from shared.trace_utils import collect_trace_files, extract_device_info, extract_device_code
 
 def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], extracted: bool):
     """
@@ -116,55 +117,9 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     print(f"\n[2/2] Processing REF folder...")
     ref_results = get_or_process_folder_with_cache(ref_folder, "REF", num_workers, target_apps, extracted)
     
-    # Extract header title, version và model từ file đầu tiên của DUT
-    dut_version = ""
-    dut_model = ""
-    dut_files = collect_trace_files(dut_folder)
-    if dut_files:
-        first_file = Path(dut_files[0]).stem
-        parts = first_file.split("_")
-        header_title = "_".join(parts[:2]) if len(parts) >= 2 else "Metric"
-        # [NEW] Cắt chuỗi lấy Model và Version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
-        if parts:
-            model_part = parts[0]
-            if '-' in model_part:
-                model_version = model_part.split('-')[0]  # A166B
-                version_part = model_part.split('-')[1]   # ZD7
-                dut_model = model_version
-                dut_version = version_part
-            else:
-                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
-                if len(model_part) >= 3:
-                    dut_version = model_part[-3:]
-                    dut_model = model_part[:-3].rstrip('-')
-    else:
-        header_title = "Metric"
-
-    # Extract REF header title, version và model
-    ref_version = ""
-    ref_model = ""
-    ref_files = collect_trace_files(ref_folder)
-    if ref_files:
-        first_ref_file = Path(ref_files[0]).stem
-        parts = first_ref_file.split("_")
-        header_title_ref = "_".join(parts[:2]) if len(parts) >= 2 else "Metric"
-        # [NEW] Cắt chuỗi lấy Model và Version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
-        if parts:
-            model_part = parts[0]
-            if '-' in model_part:
-                model_version = model_part.split('-')[0]  # A166B
-                version_part = model_part.split('-')[1]   # ZD7
-                ref_model = model_version
-                ref_version = version_part
-            else:
-                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
-                if len(model_part) >= 3:
-                    ref_version = model_part[-3:]
-                    ref_model = model_part[:-3].rstrip('-')
-    else:
-        header_title_ref = "Metric"
-
-    # Extract device codes
+    # Extract device info from DUT and REF folders
+    dut_model, dut_version, header_title = extract_device_info(dut_folder)
+    ref_model, ref_version, header_title_ref = extract_device_info(ref_folder)
     dut_device_code = extract_device_code(header_title)
     ref_device_code = extract_device_code(header_title_ref)
     
