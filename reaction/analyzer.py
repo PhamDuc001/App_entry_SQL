@@ -39,7 +39,7 @@ from sql_query.loadapk_asset import get_pid_systemUI
 if sys.platform == "win32":
     TP_FILENAME = "trace_processor.exe"
 else:
-    TP_FILENAME = "trace_processor.exe"
+    TP_FILENAME = "trace_processor"
 
 # Local
 # RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
