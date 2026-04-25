@@ -1,35 +1,10 @@
 import os
 import json
 import datetime
-from pathlib import Path
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, List
 from collections import defaultdict
 from execution.processor import select_common_end_ts_type, get_metrics_for_end_ts_type
-
-def extract_version_and_model(file_path: str) -> Tuple[str, str]:
-    """
-    Extract version và model từ tên file trace đầu tiên
-    Ví dụ: A166B-YLJ-4GB-BOS-TEST_ZC5_251226.log
-    -> model: A166B, version: ZC5
-    """
-    if not file_path:
-        return "", ""
-    
-    filename = Path(file_path).stem
-    parts = filename.split('_')
-    
-    if len(parts) >= 2:
-        # Model là phần đầu tiên trước dấu '-'
-        model_part = parts[0]
-        model = model_part.split('-')[0] if '-' in model_part else model_part
-        
-        # Version là phần thứ hai từ cuối lên (phần trước timestamp)
-        version = parts[-2] if len(parts) >= 3 else parts[-1]
-        # Nếu version có chứa '-', lấy phần trước dấu '-'
-        version = version.split('-')[0] if '-' in version else version
-        return model, version
-    
-    return "", ""
+from shared.trace_utils import extract_version_and_model
 
 def extract_device_code(header_title):
     """

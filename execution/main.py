@@ -8,9 +8,10 @@ from typing import List
 from multiprocessing import cpu_count
 
 from execution.config import CACHE_VERSION
-from execution.processor import process_all_traces, collect_trace_files
+from execution.processor import process_all_traces
 from execution.excel_output import create_excel_output
 from execution.json_output import export_avg_to_json, extract_device_code
+from shared.trace_utils import collect_trace_files, extract_model_and_version_from_trace_name
 
 def get_or_process_folder_with_cache(folder_path: str, label: str, num_workers: int, target_apps: List[str], extracted: bool):
     """
@@ -102,7 +103,9 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         target_apps: Danh sách apps cần xử lý (optional)
         extracted: True nếu các Bugreport đã được giải nén thành folder
     """
-    num_workers = min(cpu_count(), 8)
+    env_workers = os.environ.get("TRACETOOL_WORKERS")
+    num_workers = int(env_workers) if env_workers else min(cpu_count(), 8)
+    num_workers = max(1, num_workers)
     
     if not os.path.exists(dut_folder):
         raise FileNotFoundError(f"DUT folder not found: {dut_folder}")
@@ -134,18 +137,7 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         parts = first_file.split("_")
         header_title = "_".join(parts[:2]) if len(parts) >= 2 else "Metric"
         # [NEW] Cắt chuỗi lấy Model và Version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
-        if parts:
-            model_part = parts[0]
-            if '-' in model_part:
-                model_version = model_part.split('-')[0]  # A166B
-                version_part = model_part.split('-')[1]   # ZD7
-                dut_model = model_version
-                dut_version = version_part
-            else:
-                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
-                if len(model_part) >= 3:
-                    dut_version = model_part[-3:]
-                    dut_model = model_part[:-3].rstrip('-')
+        dut_model, dut_version = extract_model_and_version_from_trace_name(dut_files[0])
     else:
         header_title = "Metric"
 
@@ -158,18 +150,7 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         parts = first_ref_file.split("_")
         header_title_ref = "_".join(parts[:2]) if len(parts) >= 2 else "Metric"
         # [NEW] Cắt chuỗi lấy Model và Version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
-        if parts:
-            model_part = parts[0]
-            if '-' in model_part:
-                model_version = model_part.split('-')[0]  # A166B
-                version_part = model_part.split('-')[1]   # ZD7
-                ref_model = model_version
-                ref_version = version_part
-            else:
-                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
-                if len(model_part) >= 3:
-                    ref_version = model_part[-3:]
-                    ref_model = model_part[:-3].rstrip('-')
+        ref_model, ref_version = extract_model_and_version_from_trace_name(ref_files[0])
     else:
         header_title_ref = "Metric"
 

@@ -65,85 +65,17 @@ from dumpstate_parser import (
     find_dumpstate_content
 )
 
+# Import shared config — Single source of truth
+from shared.config import (
+    APP_MAPPING, TARGET_APPS, COLD_ONLY_KEYS, WARM_ONLY_KEYS,
+    APP_NAME_NORMALIZATION, CACHE_VERSION,
+    get_trace_processor_bin
+)
+
 # ---------------------------------------------------------------------------
-# Configuration 
+# Trace Processor Binary (Execution dùng Local mode)
 # ---------------------------------------------------------------------------
-# TRACE_PROCESSOR_BIN = r"D:\Tools\CheckList\Bringup\Plan_convert_SQL\perfetto\trace_processor"
-# v54.0 binary (upgraded from v30.0 Python wrapper)
-if sys.platform == "win32":
-    TP_FILENAME = "trace_processor.exe"
-else:
-    TP_FILENAME = "trace_processor"
-
-# Local
-RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
-# Build
-# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
-#===============================================================
-TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
-
-APP_MAPPING = {
-    "comsamsungperformancehelloworld_v6": "Helloworld",
-    "comsamsungandroiddialer": "Dial",
-    "comsecandroidappclockpackage": "Clock",
-    "comsecandroidappcamera": "Camera",
-    "comsamsungandroidappcontacts": "Contacts",
-    "comsamsungandroidcalendar": "Calendar",
-    "comsecandroidapppopupcalculator": "Calculator",
-    "com.sec.android.gallery3d": "Gallery",
-    "comsamsungandroidmessaging": "Messages",
-    "comsec.androidappmyfiles": "MyFiles",
-    "comexampleedittexttest3": "SIP",
-    "comsecandroidappsbrowser": "Internet",
-    "comsamsungandroidappnotes": "Notes",
-    "comandroidsettings": "Settings",
-    "comsecandroidappvoicenote": "VoiceNote",
-    "comgoogleandroidappsmessaging": "Messages",
-}
-
-TARGET_APPS = [
-    "camera",      # sẽ match cả "camera"
-    "hello",       # sẽ match cả "hello", "helloworld"  
-    "call",        # sẽ match cả "calllog"
-    "clock",
-    "contact",
-    "calendar",
-    "calender",
-    "calculator",
-    "gallery",
-    "message",
-    "menu",
-    "myfile",      # sẽ match cả "myfile", "myfiles"
-    "internet",
-    "note",        # sẽ match cả "note", "notes"
-    "setting",
-    "voice",       # sẽ match cả "voice", "voicerecorder"
-    "recent"
-]
-
-
-COLD_ONLY_KEYS = {
-    "Touch Down ~ Start Proc",
-    "Start Proc",
-    "Start Proc ~ ActivityThreadMain",
-    "Activity Thread Main",
-    "ActivityThreadMain ~ bindApplication",
-    "Bind Application",
-    "bindApplication ~ activityStart"
-}
-
-WARM_ONLY_KEYS = {
-    "Touch Duration",
-    "Touch Up ~ Activity Start"
-}
-
-# App name normalization map - fix common typos/misspellings
-APP_NAME_NORMALIZATION = {
-    "calender": "calendar",  # Fix "calender" → "calendar"
-    "recorder": "voice"
-}
-
-CACHE_VERSION = "1.0"  # Tăng lên "1.1", "2.0"... 
+TRACE_PROCESSOR_BIN = get_trace_processor_bin(mode="local")
 
 # CRITICAL: Set environment variables TRƯỚC KHI import bất cứ thứ gì
 os.environ['NUMPY_EXPERIMENTAL_ARRAY_FUNCTION'] = '0'
