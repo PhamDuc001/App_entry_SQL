@@ -1,18 +1,5 @@
 from execution.config import *
-
-def collect_trace_files(folder_path: str) -> List[str]:
-    """
-    Collect file .log trong folder, đã sort theo tên (A-Z).
-    
-    Returns:
-        List[str]: All file .log
-    """
-    folder = Path(folder_path)
-    if not folder.exists() or not folder.is_dir():
-        raise ValueError(f"Folder không tồn tại: {folder_path}")
-    
-    log_files = sorted([str(f) for f in folder.glob("*.log")])
-    return log_files
+from shared.trace_utils import collect_trace_files
 
 def group_traces_by_app(trace_files: List[str], target_apps: List[str] = None) -> Dict[str, List[Tuple[str, int]]]:
     if target_apps is None:

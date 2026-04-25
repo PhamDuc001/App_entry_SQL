@@ -82,66 +82,8 @@ RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
-APP_MAPPING = {
-    "comsamsungperformancehelloworld_v6": "Helloworld",
-    "comsamsungandroiddialer": "Dial",
-    "comsecandroidappclockpackage": "Clock",
-    "comsecandroidappcamera": "Camera",
-    "comsamsungandroidappcontacts": "Contacts",
-    "comsamsungandroidcalendar": "Calendar",
-    "comsecandroidapppopupcalculator": "Calculator",
-    "com.sec.android.gallery3d": "Gallery",
-    "comsamsungandroidmessaging": "Messages",
-    "comsec.androidappmyfiles": "MyFiles",
-    "comexampleedittexttest3": "SIP",
-    "comsecandroidappsbrowser": "Internet",
-    "comsamsungandroidappnotes": "Notes",
-    "comandroidsettings": "Settings",
-    "comsecandroidappvoicenote": "VoiceNote",
-    "comgoogleandroidappsmessaging": "Messages",
-}
-
-TARGET_APPS = [
-    "camera",      # sẽ match cả "camera"
-    "hello",       # sẽ match cả "hello", "helloworld"  
-    "call",        # sẽ match cả "calllog"
-    "clock",
-    "contact",
-    "calendar",
-    "calender",
-    "calculator",
-    "gallery",
-    "message",
-    "menu",
-    "myfile",      # sẽ match cả "myfile", "myfiles"
-    "internet",
-    "note",        # sẽ match cả "note", "notes"
-    "setting",
-    "voice",       # sẽ match cả "voice", "voicerecorder"
-    "recent"
-]
-
-
-COLD_ONLY_KEYS = {
-    "Touch Down ~ Start Proc",
-    "Start Proc",
-    "Start Proc ~ ActivityThreadMain",
-    "Activity Thread Main",
-    "ActivityThreadMain ~ bindApplication",
-    "Bind Application",
-    "bindApplication ~ activityStart"
-}
-
-WARM_ONLY_KEYS = {
-    "Touch Duration",
-    "Touch Up ~ Activity Start"
-}
-
-# App name normalization map - fix common typos/misspellings
-APP_NAME_NORMALIZATION = {
-    "calender": "calendar",  # Fix "calender" → "calendar"
-    "recorder": "voice"
-}
+# Import shared app configuration (single source of truth)
+from shared.app_config import APP_MAPPING, TARGET_APPS, COLD_ONLY_KEYS, WARM_ONLY_KEYS, APP_NAME_NORMALIZATION
 
 CACHE_VERSION = "1.0"  # Tăng lên "1.1", "2.0"... 
 
