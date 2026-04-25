@@ -31,7 +31,7 @@ from sql_query import *
 if sys.platform == "win32":
     TP_FILENAME = "trace_processor.exe"
 else:
-    TP_FILENAME = "trace_processor.exe"
+    TP_FILENAME = "trace_processor"
 
 # Local
 # RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
