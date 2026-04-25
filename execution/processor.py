@@ -109,10 +109,10 @@ def _process_single_trace_worker(args):
             metrics['Precomputed_Extend_Data'] = extend_data
             # ========================================================
             
-            return (app_name, occurrence, category, metrics, filename)
+            return (app_name, occurrence, category, metrics, file_path)
     except Exception as e:
         print(f"    [ERROR] {Path(file_path).name}: {e}")
-        return (app_name, occurrence, 'entry' if occurrence % 2 == 1 else 'reentry', None, filename)
+        return (app_name, occurrence, 'entry' if occurrence % 2 == 1 else 'reentry', None, file_path)
 
 
 def process_single_trace(args: Tuple[str, int, str], pid_mapping: Dict[int, str] = None) -> Tuple[str, int, str, Optional[Dict[str, Any]], str]:
@@ -174,11 +174,17 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
     # Khởi tạo list với dung lượng dư thừa để tránh index error
     results = defaultdict(lambda: {'entry': [], 'reentry': []})
     task_mapping_info = {t[0]: t[4] for t in tasks}
-    
-    task_mapping_by_stem = {Path(t[0]).stem: t[0] for t in tasks}
 
-    with Pool(processes=num_workers) as pool:
-        for i, (app_name, occurrence, category, metrics, filename) in enumerate(pool.imap(_process_single_trace_worker, tasks)):
+    pool = None
+    pool_failed = False
+    try:
+        if num_workers <= 1:
+            trace_results = map(_process_single_trace_worker, tasks)
+        else:
+            pool = Pool(processes=num_workers)
+            trace_results = pool.imap(_process_single_trace_worker, tasks)
+
+        for i, (app_name, occurrence, category, metrics, trace_file) in enumerate(trace_results):
             
             # [FIX 1] Luôn tính toán cycle index, kể cả khi metrics là None (lỗi)
             # Logic: Trace 1,2 -> Cycle 0; Trace 3,4 -> Cycle 1
@@ -191,18 +197,26 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
             
             if metrics:
                 # Nếu có data, bổ sung thông tin trace file
-                trace_file = task_mapping_by_stem.get(filename)
-
                 if trace_file:
                     metrics['trace_file'] = trace_file
                     metrics['trace_mapping'] = task_mapping_info.get(trace_file, {})
                 
-                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {filename} - OK")
+                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {Path(trace_file).stem} - OK")
                 results[app_name][category][cycle_index] = metrics
             else:
                 # Nếu metrics None (lỗi), giữ nguyên giá trị None tại index đó
-                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {filename} - FAILED/EMPTY")
+                print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {Path(trace_file).stem} - FAILED/EMPTY")
                 results[app_name][category][cycle_index] = None
+    except Exception:
+        pool_failed = True
+        if pool is not None:
+            pool.terminate()
+            pool.join()
+        raise
+    finally:
+        if pool is not None and not pool_failed:
+            pool.close()
+            pool.join()
     
     # [FIX 2] KHÔNG lọc bỏ None. Giữ nguyên cấu trúc [Data, None, Data] để Excel vẽ đúng cột.
     cleaned_results = {}

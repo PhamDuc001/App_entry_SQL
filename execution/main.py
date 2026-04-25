@@ -103,7 +103,9 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
         target_apps: Danh sách apps cần xử lý (optional)
         extracted: True nếu các Bugreport đã được giải nén thành folder
     """
-    num_workers = min(cpu_count(), 8)
+    env_workers = os.environ.get("TRACETOOL_WORKERS")
+    num_workers = int(env_workers) if env_workers else min(cpu_count(), 8)
+    num_workers = max(1, num_workers)
     
     if not os.path.exists(dut_folder):
         raise FileNotFoundError(f"DUT folder not found: {dut_folder}")
