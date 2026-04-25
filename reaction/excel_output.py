@@ -5,13 +5,7 @@ from typing import Dict, Any, List
 import xlsxwriter
 
 from reaction.analyzer import APP_MAPPING
-
-def write_value_or_empty(ws, row, col, value, fmt):
-    """Helper: Ghi giá trị vào Excel, nếu 0.0 hoặc rỗng thì để trắng."""
-    if value == 0.0 or value == "" or value is None:
-        ws.write(row, col, "", fmt)
-    else:
-        ws.write(row, col, value, fmt)
+from shared.excel import write_value_or_empty
 
 def create_excel_output(
     dut_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
@@ -156,7 +150,7 @@ def create_excel_output(
                         # Nếu giá trị là string rỗng (do logic placeholder) thì coi là 0.0
                         if val == "": val = 0.0
                         
-                        write_value_or_empty(ws, row_idx, col_idx, float(val), fmt_val)
+                        write_value_or_empty(ws, row_idx, col_idx, float(val), fmt_val, empty_if_blank=True)
                         dut_values.append(float(val))
                     else:
                         ws.write(row_idx, col_idx, "", fmt_val)
@@ -168,7 +162,7 @@ def create_excel_output(
                     dut_avg = sum(valid_dut) / len(valid_dut)
                 else:
                     dut_avg = 0.0
-                write_value_or_empty(ws, row_idx, col_idx, dut_avg, fmt_val)
+                write_value_or_empty(ws, row_idx, col_idx, dut_avg, fmt_val, empty_if_blank=True)
                 col_idx += 1
                 
                 # --- REF DATA ---
@@ -178,7 +172,7 @@ def create_excel_output(
                         val = ref_cycles[i].get(metric_key, 0.0)
                         if val == "": val = 0.0
                         
-                        write_value_or_empty(ws, row_idx, col_idx, float(val), fmt_val)
+                        write_value_or_empty(ws, row_idx, col_idx, float(val), fmt_val, empty_if_blank=True)
                         ref_values.append(float(val))
                     else:
                         ws.write(row_idx, col_idx, "", fmt_val)
@@ -190,7 +184,7 @@ def create_excel_output(
                     ref_avg = sum(valid_ref) / len(valid_ref)
                 else:
                     ref_avg = 0.0
-                write_value_or_empty(ws, row_idx, col_idx, ref_avg, fmt_val)
+                write_value_or_empty(ws, row_idx, col_idx, ref_avg, fmt_val, empty_if_blank=True)
                 col_idx += 1
                 
                 # --- DIFF (DUT - REF) ---
@@ -206,7 +200,7 @@ def create_excel_output(
                     else:
                         fmt_diff = fmt_diff_normal
                     
-                    write_value_or_empty(ws, row_idx, col_idx, diff_val, fmt_diff)
+                    write_value_or_empty(ws, row_idx, col_idx, diff_val, fmt_diff, empty_if_blank=True)
                 else:
                     ws.write(row_idx, col_idx, "", fmt_diff_normal)
                 

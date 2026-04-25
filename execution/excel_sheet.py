@@ -4,13 +4,7 @@ import xlsxwriter
 
 from execution.config import COLD_ONLY_KEYS, WARM_ONLY_KEYS
 from execution.processor import select_common_end_ts_type, get_metrics_for_end_ts_type
-
-def write_value_or_empty(ws, row, col, value, fmt):
-    """Ghi giá trị vào Excel, nếu là 0.0 thì để trống"""
-    if value == 0.0:
-        ws.write(row, col, "", fmt)
-    else:
-        ws.write(row, col, value, fmt)
+from shared.excel import write_value_or_empty
 
 def get_filtered_metric_rows(launch_type: str, app_name: str, has_cold: bool, has_warm: bool) -> List[Tuple[str, str]]:
     """Trả về danh sách các hàng metric cần hiển thị."""

@@ -8,6 +8,7 @@ from perfetto.trace_processor.api import TraceProcessor, TraceProcessorConfig
 from execution.config import (
     APP_NAME_NORMALIZATION, TARGET_APPS, TRACE_PROCESSOR_BIN,
 )
+from shared.trace_utils import collect_trace_files
 from sql_query.analysis import analyze_trace
 from utils.trace.atracetosystrace import convert_trace
 from dumpstate_parser import (
@@ -17,20 +18,6 @@ from dumpstate_parser import (
     parse_pageboostd_for_app, parse_pss_for_app,
     parse_start_reasons, parse_uptime,
 )
-
-def collect_trace_files(folder_path: str) -> List[str]:
-    """
-    Collect file .log trong folder, đã sort theo tên (A-Z).
-    
-    Returns:
-        List[str]: All file .log
-    """
-    folder = Path(folder_path)
-    if not folder.exists() or not folder.is_dir():
-        raise ValueError(f"Folder không tồn tại: {folder_path}")
-    
-    log_files = sorted([str(f) for f in folder.glob("*.log")])
-    return log_files
 
 def group_traces_by_app(trace_files: List[str], target_apps: List[str] = None) -> Dict[str, List[Tuple[str, int]]]:
     if target_apps is None:
@@ -162,7 +149,7 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
     Xử lý tất cả traces.
     [UPDATED] Fix lỗi dồn cycle khi có trace bị lỗi (giữ nguyên None trong list kết quả).
     """
-    trace_files = collect_trace_files(folder_path)
+    trace_files = collect_trace_files(folder_path, raise_on_invalid=True)
     app_groups = group_traces_by_app(trace_files, target_apps)
     
     # Build mapping using sorted filename approach
@@ -188,8 +175,9 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
     results = defaultdict(lambda: {'entry': [], 'reentry': []})
     task_mapping_info = {t[0]: t[4] for t in tasks}
     
-    pool = Pool(processes=num_workers)
-    try:
+    task_mapping_by_stem = {Path(t[0]).stem: t[0] for t in tasks}
+
+    with Pool(processes=num_workers) as pool:
         for i, (app_name, occurrence, category, metrics, filename) in enumerate(pool.imap(_process_single_trace_worker, tasks)):
             
             # [FIX 1] Luôn tính toán cycle index, kể cả khi metrics là None (lỗi)
@@ -203,12 +191,8 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
             
             if metrics:
                 # Nếu có data, bổ sung thông tin trace file
-                trace_file = None
-                for task in tasks:
-                    if Path(task[0]).stem == filename:
-                        trace_file = task[0]
-                        break
-                
+                trace_file = task_mapping_by_stem.get(filename)
+
                 if trace_file:
                     metrics['trace_file'] = trace_file
                     metrics['trace_mapping'] = task_mapping_info.get(trace_file, {})
@@ -219,10 +203,6 @@ def process_all_traces(folder_path: str, label: str, num_workers: int = 8,
                 # Nếu metrics None (lỗi), giữ nguyên giá trị None tại index đó
                 print(f"  - [{i+1}/{len(tasks)}] {app_name} - {category} - cycle {cycle_index + 1} - {filename} - FAILED/EMPTY")
                 results[app_name][category][cycle_index] = None
-
-    finally:
-        pool.close() 
-        pool.join()  
     
     # [FIX 2] KHÔNG lọc bỏ None. Giữ nguyên cấu trúc [Data, None, Data] để Excel vẽ đúng cột.
     cleaned_results = {}

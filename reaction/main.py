@@ -3,43 +3,16 @@ import sys
 import pickle
 import traceback
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 from multiprocessing import cpu_count
 
 from reaction.analyzer import CACHE_VERSION, process_all_traces
 from reaction.excel_output import create_excel_output
+from shared.trace_utils import (
+    collect_trace_files,
+    extract_model_and_version_from_trace_name,
+)
 
-def collect_trace_files(folder_path: str) -> List[str]:
-    """Helper: Collect file .log trong folder"""
-    folder = Path(folder_path)
-    if not folder.exists() or not folder.is_dir():
-        return []
-    return sorted([str(f) for f in folder.glob("*.log")])
-
-def extract_version_and_model(file_path: str) -> Tuple[str, str]:
-    """
-    Extract version và model từ tên file trace đầu tiên
-    Ví dụ: A166B-YLJ-4GB-BOS-TEST_ZC5_251226.log
-    -> model: A166B, version: ZC5
-    """
-    if not file_path:
-        return "", ""
-    
-    filename = Path(file_path).stem
-    parts = filename.split('_')
-    
-    if len(parts) >= 2:
-        # Model là phần đầu tiên trước dấu '-'
-        model_part = parts[0]
-        model = model_part.split('-')[0] if '-' in model_part else model_part
-        
-        # Version là phần thứ hai từ cuối lên (phần trước timestamp)
-        version = parts[-2] if len(parts) >= 3 else parts[-1]
-        # Nếu version có chứa '-', lấy phần trước dấu '-'
-        version = version.split('-')[0] if '-' in version else version
-        return model, version
-    
-    return "", ""
 
 # ... (phần đầu file giữ nguyên) ...
 
@@ -171,39 +144,11 @@ def run_analysis(dut_folder: str, ref_folder: str, target_apps: List[str] = None
     ref_model = ""
     
     if dut_files:
-        first_file = Path(dut_files[0]).stem
-        parts = first_file.split("_")
-        if parts:
-            # Extract model và version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
-            model_part = parts[0]
-            if '-' in model_part:
-                model_version = model_part.split('-')[0]  # A166B
-                version_part = model_part.split('-')[1]   # ZD7
-                dut_model = model_version
-                dut_version = version_part
-            else:
-                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
-                if len(model_part) >= 3:
-                    dut_version = model_part[-3:]
-                    dut_model = model_part[:-3].rstrip('-')
+        dut_model, dut_version = extract_model_and_version_from_trace_name(dut_files[0])
     
     ref_files = collect_trace_files(ref_folder)
     if ref_files:
-        first_ref_file = Path(ref_files[0]).stem
-        parts = first_ref_file.split("_")
-        if parts:
-            # Extract model và version từ phần đầu tiên: A166B-ZD7-4GB-BOS-TEST
-            model_part = parts[0]
-            if '-' in model_part:
-                model_version = model_part.split('-')[0]  # A166B
-                version_part = model_part.split('-')[1]   # ZD7
-                ref_model = model_version
-                ref_version = version_part
-            else:
-                # Nếu không có dấu -, lấy 3 ký tự cuối làm version
-                if len(model_part) >= 3:
-                    ref_version = model_part[-3:]
-                    ref_model = model_part[:-3].rstrip('-')
+        ref_model, ref_version = extract_model_and_version_from_trace_name(ref_files[0])
     
     # 4. Generating Excel
     print("\n[3/3] Creating Excel files...")
