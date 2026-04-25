@@ -66,6 +66,8 @@ a = Analysis(
     'execution.excel_sheet', 'execution.json_output',
     # reaction package (refactored from monolithic reaction_sql.py)
     'reaction', 'reaction.analyzer', 'reaction.excel_output', 'reaction.main',
+    # shared package (common utilities)
+    'shared', 'shared.app_config', 'shared.trace_utils', 'shared.excel_utils',
     'utils.trace.atracetosystrace',
     # MemoryStatus modules
     'MemoryStatus', 'MemoryStatus.memory_main', 'MemoryStatus.abnormal_memory',
