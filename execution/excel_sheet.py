@@ -1296,12 +1296,106 @@ def create_sheet(
     #             # Tăng row sau mỗi Depth
     #             row_idx += 1
 
+    # =========================================================================
+    # === Top Function Block I/O Table (NEW) ===
+    # =========================================================================
+    row_idx += 3
+    
+    # Formats cho Block I/O tables (dung chung cho Function Block I/O va Library Block I/O)
+    fmt_blockio_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#ADD8E6", "border": 1, "border_color": "#000000"})
+    fmt_blockio_val = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
+    
+    all_dut_func_io = [cycle.get("Function_Block_IO_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_func_io = [cycle.get("Function_Block_IO_Data", []) if cycle else [] for cycle in ref_cycles]
+    
+    all_func_names = set()
+    for cycle_data in all_dut_func_io + all_ref_func_io:
+        for func in cycle_data:
+            all_func_names.add(func.get('functionName', func.get('libraryName', 'Unknown')))
+            
+    if all_func_names:
+        func_stats = []
+        for func_name in all_func_names:
+            # DUT Stats
+            dut_times = []
+            for cycle_data in all_dut_func_io:
+                found_ms = next((item['timeTotal_ms'] for item in cycle_data if item.get('functionName', item.get('libraryName', '')) == func_name), 0.0)
+                dut_times.append(found_ms)
+            dut_avg = sum(dut_times) / len(dut_times) if dut_times else 0.0
+            
+            # REF Stats
+            ref_times = []
+            for cycle_data in all_ref_func_io:
+                found_ms = next((item['timeTotal_ms'] for item in cycle_data if item.get('functionName', item.get('libraryName', '')) == func_name), 0.0)
+                ref_times.append(found_ms)
+            ref_avg = sum(ref_times) / len(ref_times) if ref_times else 0.0
+            
+            diff = dut_avg - ref_avg
+            func_stats.append({
+                'name': func_name,
+                'dut_times': dut_times, 'dut_avg': dut_avg,
+                'ref_times': ref_times, 'ref_avg': ref_avg,
+                'diff': diff
+            })
+            
+        # [QUAN TRỌNG] Sort Diff giảm dần (ưu tiên DUT chậm hơn REF) và chỉ lấy Top 5
+        sorted_func_stats = sorted(func_stats, key=lambda x: x['diff'], reverse=True)[:20]
+        
+        # Vẽ Header
+        total_cols = 1 + len(dut_cycles) + 1 + len(ref_cycles) + 1 + 1 
+        ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "Top Function Block I/O (Main Thread & HAL)", fmt_blockio_header)
+        row_idx += 1
+        
+        ws.write(row_idx, 0, "Function Name", fmt_blockio_header)
+        col_idx = 1
+        for i in range(1, len(dut_cycles) + 1):
+            ws.write(row_idx, col_idx, f"DUT Cy{i}", fmt_blockio_header)
+            col_idx += 1
+        ws.write(row_idx, col_idx, "DUT Avg", fmt_blockio_header)
+        col_idx += 1
+        
+        for i in range(1, len(ref_cycles) + 1):
+            ws.write(row_idx, col_idx, f"REF Cy{i}", fmt_blockio_header)
+            col_idx += 1
+        ws.write(row_idx, col_idx, "REF Avg", fmt_blockio_header)
+        col_idx += 1
+        
+        ws.write(row_idx, col_idx, "Diff", fmt_blockio_header)
+        row_idx += 1
+        
+        # Vẽ Data
+        for func in sorted_func_stats:
+            ws.write(row_idx, 0, func['name'], fmt_label)
+            col_idx = 1
+            
+            for val in func['dut_times']:
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                col_idx += 1
+            write_value_or_empty(ws, row_idx, col_idx, func['dut_avg'], fmt_blockio_val)
+            col_idx += 1
+            
+            for val in func['ref_times']:
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                col_idx += 1
+            write_value_or_empty(ws, row_idx, col_idx, func['ref_avg'], fmt_blockio_val)
+            col_idx += 1
+            
+            # Format Diff (ngưỡng 10ms do Function thường nhỏ hơn Library)
+            diff_val = func['diff']
+            if diff_val > 10:
+                fmt_diff = fmt_diff_slow
+            elif diff_val < -10:
+                fmt_diff = fmt_diff_fast
+            else:
+                fmt_diff = fmt_diff_normal
+                
+            write_value_or_empty(ws, row_idx, col_idx, diff_val, fmt_diff)
+            row_idx += 1
+
+
     # =============== Top Block I/O Table (MOVED TO POSITION 5) ================
     row_idx += 3
     
-    # Formats cho Block I/O table
-    fmt_blockio_header = wb.add_format({"bold": True, "align": "center", "bg_color": "#ADD8E6", "border": 1, "border_color": "#000000"})
-    fmt_blockio_val = wb.add_format({"num_format": "0.000", "align": "center", "border": 1, "border_color": "#000000"})
     
     # Thu thập Block I/O data từ tất cả cycles
     all_dut_block_io = [cycle.get("Block_IO_Data", []) if cycle else [] for cycle in dut_cycles]

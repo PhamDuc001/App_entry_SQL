@@ -165,7 +165,7 @@ def get_kernel_block_io(tp: TraceProcessor, app_pid: int, start_time: int, dur_t
       AND t.is_main_thread = 1
       AND ts.state = 'D'
       AND ts.blocked_function IS NOT NULL
-      AND (ts.blocked_function LIKE '%io_schedule%' OR ts.blocked_function LIKE '%blk_%')
+    --  AND (ts.blocked_function LIKE '%io_schedule%' OR ts.blocked_function LIKE '%blk_%')
       AND ts.ts < {end_time} AND (ts.ts + ts.dur) > {start_time}
     GROUP BY ts.blocked_function;
     """
@@ -198,7 +198,7 @@ def get_kernel_block_io(tp: TraceProcessor, app_pid: int, start_time: int, dur_t
     results = []
     for _, row in df.iterrows():
         results.append({
-            'libraryName': f"[Kernel] {row['blocked_function']}",
+            'functionName': f"{row['blocked_function']}",
             'timeTotal_ms': float(row['duration_ms']),
             'occurenceTotal': 0
         })
@@ -247,7 +247,7 @@ def _query_kernel_bio_from_raw(trace_path: str, sql: str) -> Optional[pd.DataFra
                 pass
 
 # ===================== Camera HAL Block IO ================================
-
+# Library name block IO
 def get_hal_library_block_io(tp: TraceProcessor, hal_pid: int, start_time: int, end_time: int):
     """
     Lay danh sach library slices co Block I/O cho tien trinh HAL.
@@ -297,10 +297,8 @@ def get_hal_library_block_io(tp: TraceProcessor, hal_pid: int, start_time: int, 
     return query_df(tp, sql)
 
 def process_hal_block_io_data(df) -> List[Dict[str, Any]]:
-    """Xu ly DataFrame Library Block I/O cua HAL thanh list dict."""
-    if df is None or df.empty:
-        return []
-    
+    """Xử lý DataFrame Library Block I/O của HAL thành list dict."""
+    if df is None or df.empty: return []
     library_stats = defaultdict(lambda: {'timeTotal': 0, 'occurenceTotal': 0})
     for _, row in df.iterrows():
         name_parts = row['name'].split(' , ')
@@ -313,10 +311,40 @@ def process_hal_block_io_data(df) -> List[Dict[str, Any]]:
     result = []
     for lib_name, stats in library_stats.items():
         result.append({
-            'libraryName': f"[HAL] {lib_name}", # Them prefix [HAL]
-            'timeTotal': stats['timeTotal'],
-            'timeTotal_ms': stats['timeTotal'] / 1000000.0,
-            'occurenceTotal': stats['occurenceTotal']
+            'libraryName': f"[HAL] {lib_name}", 
+            'timeTotal_ms': stats['timeTotal'] / 1000000.0
         })
-    result.sort(key=lambda x: x['timeTotal'], reverse=True)
     return result
+
+# Function block IO
+def get_hal_block_io(tp: TraceProcessor, hal_pid: int, start_time: int, dur_time: int) -> List[Dict[str, Any]]:
+    """Lấy Kernel Function Block I/O (blk_io_schedule, v.v.) cho tiến trình HAL."""
+    if not dur_time or dur_time <= 0 or not hal_pid: return []
+    end_time = start_time + dur_time
+    
+    sql = f"""
+    SELECT 
+        ts.blocked_function,
+        SUM(
+            MIN(CASE WHEN ts.dur = -1 THEN (SELECT end_ts FROM trace_bounds) ELSE ts.ts + ts.dur END, {end_time}) 
+            - MAX(ts.ts, {start_time})
+        ) / 1e6 AS duration_ms
+    FROM thread_state ts
+    JOIN thread t USING (utid) JOIN process p USING (upid)
+    WHERE p.pid = {hal_pid} AND ts.state = 'D' AND ts.blocked_function IS NOT NULL
+      AND (ts.blocked_function LIKE '%io_schedule%' OR ts.blocked_function LIKE '%blk_%' OR ts.blocked_function LIKE '%submit_bio%')
+      AND ts.ts < {end_time} 
+      AND (CASE WHEN ts.dur = -1 THEN (SELECT end_ts FROM trace_bounds) ELSE ts.ts + ts.dur END) > {start_time}
+    GROUP BY ts.blocked_function;
+    """
+    
+    df = query_df(tp, sql)
+    if df is None or df.empty: return []
+        
+    results = []
+    for _, row in df.iterrows():
+        results.append({
+            'functionName': f"[HAL] {row['blocked_function']}", 
+            'timeTotal_ms': float(row['duration_ms'])
+        })
+    return results

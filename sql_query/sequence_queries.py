@@ -1,5 +1,5 @@
 from sql_query.base import to_ms, query_df, ensure_slice_with_names_view, find_slice
-from sql_query.block_io import top_block_IO, process_block_io_data, get_kernel_block_io, get_hal_library_block_io, process_hal_block_io_data
+from sql_query.block_io import top_block_IO, process_block_io_data, get_hal_block_io, get_kernel_block_io, get_hal_library_block_io, process_hal_block_io_data
 from sql_query.loadapk_asset import get_system_pids, get_loadApkAsset, process_loadapk_data, get_camera_hal_pid
 from sql_query.cpu_queries import get_top_cpu_usage_process, process_cpu_data_process, get_top_cpu_usage_thread, process_cpu_data_thread
 from sql_query.binder_transaction import get_binder_transaction
@@ -277,31 +277,34 @@ def _query_end_ts_dependent_data(
     data["Uninterruptible Sleep"] = state_summary.get("D", 0.0)
     data["Sleeping"] = state_summary.get("S", 0.0)
     
-    
     # [1] Block I/O tầng Library (App Process)
     safe_start_time = touch_down_ts if touch_down_ts else 0
     safe_end_time = end_ts if end_ts else (safe_start_time + 10_000_000_000)
     
     block_io_df = top_block_IO(tp, app_pid, safe_start_time, safe_end_time)
     library_block_io = process_block_io_data(block_io_df)
+
+    hal_library_block_io = []
+    hal_func_block_io = []
+    hal_pid = get_camera_hal_pid(tp)
     
-    # [2] Block I/O tầng Kernel (App Process) - Nếu bạn vẫn giữ
-    dur_time = end_ts - touch_down_ts if end_ts and touch_down_ts else 0
-    kernel_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time, trace_path=trace_path)
-
-    # ========================================================
-    # [3] Block I/O tầng Library (Camera HAL Process)
-    # ========================================================
-    hal_block_io = []
-    hal_pid = get_camera_hal_pid(tp) # Gọi hàm tìm PID ở câu trước
     if hal_pid:
-        hal_df = get_hal_library_block_io(tp, hal_pid, safe_start_time, safe_end_time)
-        hal_block_io = process_hal_block_io_data(hal_df)
+        # Lấy Library I/O của HAL
+        hal_lib_df = get_hal_library_block_io(tp, hal_pid, safe_start_time, safe_end_time)
+        hal_library_block_io = process_hal_block_io_data(hal_lib_df)
+        
+        # Lấy Function Block I/O của HAL
+        dur_time = end_ts - touch_down_ts if end_ts and touch_down_ts else 0
+        hal_func_block_io = get_hal_block_io(tp, hal_pid, safe_start_time, dur_time)
 
-    # [4] MERGE TOÀN BỘ DATA VÀO 1 BẢNG DUY NHẤT
-    data["Block_IO_Data"] = library_block_io + kernel_block_io + hal_block_io
+    # [2] Kernel Function Block I/O (App Main Thread)
+    dur_time = end_ts - touch_down_ts if end_ts and touch_down_ts else 0
+    app_func_block_io = get_kernel_block_io(tp, app_pid, safe_start_time, dur_time, trace_path=trace_path)
 
-
+    # [3] PHÂN TÁCH DATA CHO 2 BẢNG
+    data["Block_IO_Data"] = library_block_io + hal_library_block_io
+    data["Function_Block_IO_Data"] = app_func_block_io + hal_func_block_io
+    
     # [LoadApkAssets Logic]
     # 1. Lấy PID chính xác của System
     sys_pids = get_system_pids(tp)

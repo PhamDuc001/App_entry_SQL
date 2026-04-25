@@ -279,19 +279,47 @@ def get_metrics_for_end_ts_type(metrics: Dict[str, Any], end_ts_type: str) -> Di
         
         # Override các fields phụ thuộc end_ts
         for key in ["Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
-                    "Block_IO_Data", "LoadApkAsset_Data", "CPU_Process_Data",
+                    "LoadApkAsset_Data", "CPU_Process_Data",
                     "CPU_Thread_Data", "Binder_Transaction_Data",
                     "Abnormal_Process_Data", "Background_Process_States", "App Execution Time"]:
             if key in type_data:
                 result[key] = type_data[key]
-        
+                
+        # [NEW LOGIC cho Block I/O & Function Block I/O] 
+        # Luôn lấy từ mốc thời gian xa nhất (end_ts lớn nhất) để gom đủ data
+        end_ts_variants = metrics.get("end_ts_variants", {})
+        if end_ts_variants:
+            furthest_type = max(end_ts_variants.keys(), key=lambda k: end_ts_variants.get(k) or 0)
+            
+            # 1. Xử lý cho Library Block I/O
+            if furthest_type in data_by_end_ts and "Block_IO_Data" in data_by_end_ts[furthest_type]:
+                result["Block_IO_Data"] = data_by_end_ts[furthest_type]["Block_IO_Data"]
+            elif "Block_IO_Data" in type_data:
+                result["Block_IO_Data"] = type_data["Block_IO_Data"]
+                
+            # 2. Xử lý cho Function Block I/O
+            if furthest_type in data_by_end_ts and "Function_Block_IO_Data" in data_by_end_ts[furthest_type]:
+                result["Function_Block_IO_Data"] = data_by_end_ts[furthest_type]["Function_Block_IO_Data"]
+            elif "Function_Block_IO_Data" in type_data:
+                result["Function_Block_IO_Data"] = type_data["Function_Block_IO_Data"]
+                
+        else:
+            # Fallback nếu không có variants
+            if "Block_IO_Data" in type_data:
+                result["Block_IO_Data"] = type_data["Block_IO_Data"]
+            if "Function_Block_IO_Data" in type_data:
+                result["Function_Block_IO_Data"] = type_data["Function_Block_IO_Data"]
+                
         return result
     
     # Fallback: return metrics as-is (backward compatible)
     return metrics
 
 
-# ---------------------------------------------------------------------------
-# Excel Creation
-# ---------------------------------------------------------------------------
+    
+
+        
+
+
+
 

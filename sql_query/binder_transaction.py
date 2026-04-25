@@ -25,6 +25,4 @@ def get_binder_transaction(tp: TraceProcessor, app_tid: int, end_ts: int):
     row = df.iloc[0]
     return int(row['cnt']), float(row['total_ms'] or 0.0)
 
-# -------------------------------------------------------------------
-# 3.1 REACTION QUERIES
-# -------------------------------------------------------------------
+

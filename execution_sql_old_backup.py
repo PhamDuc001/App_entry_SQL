@@ -76,9 +76,9 @@ else:
     TP_FILENAME = "trace_processor.exe"
 
 # Local
-# RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
+RELATIVE_BIN_PATH = os.path.join("perfetto", TP_FILENAME)
 # Build
-RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
+# RELATIVE_BIN_PATH = os.path.join("perfetto_bin", TP_FILENAME)
 #===============================================================
 TRACE_PROCESSOR_BIN = get_resource_path(RELATIVE_BIN_PATH)
 
@@ -421,6 +421,7 @@ def select_common_end_ts_type(dut_metrics: Dict[str, Any], ref_metrics: Dict[str
     return best_type
 
 
+
 def get_metrics_for_end_ts_type(metrics: Dict[str, Any], end_ts_type: str) -> Dict[str, Any]:
     """
     Lấy data tương ứng với end_ts_type từ metrics.
@@ -442,12 +443,37 @@ def get_metrics_for_end_ts_type(metrics: Dict[str, Any], end_ts_type: str) -> Di
         
         # Override các fields phụ thuộc end_ts
         for key in ["Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
-                    "Block_IO_Data", "LoadApkAsset_Data", "CPU_Process_Data",
+                    "LoadApkAsset_Data", "CPU_Process_Data",
                     "CPU_Thread_Data", "Binder_Transaction_Data",
                     "Abnormal_Process_Data", "Background_Process_States", "App Execution Time"]:
             if key in type_data:
                 result[key] = type_data[key]
-        
+                
+        # [NEW LOGIC cho Block I/O & Function Block I/O] 
+        # Luôn lấy từ mốc thời gian xa nhất (end_ts lớn nhất) để gom đủ data
+        end_ts_variants = metrics.get("end_ts_variants", {})
+        if end_ts_variants:
+            furthest_type = max(end_ts_variants.keys(), key=lambda k: end_ts_variants.get(k) or 0)
+            
+            # 1. Xử lý cho Library Block I/O
+            if furthest_type in data_by_end_ts and "Block_IO_Data" in data_by_end_ts[furthest_type]:
+                result["Block_IO_Data"] = data_by_end_ts[furthest_type]["Block_IO_Data"]
+            elif "Block_IO_Data" in type_data:
+                result["Block_IO_Data"] = type_data["Block_IO_Data"]
+                
+            # 2. Xử lý cho Function Block I/O
+            if furthest_type in data_by_end_ts and "Function_Block_IO_Data" in data_by_end_ts[furthest_type]:
+                result["Function_Block_IO_Data"] = data_by_end_ts[furthest_type]["Function_Block_IO_Data"]
+            elif "Function_Block_IO_Data" in type_data:
+                result["Function_Block_IO_Data"] = type_data["Function_Block_IO_Data"]
+                
+        else:
+            # Fallback nếu không có variants
+            if "Block_IO_Data" in type_data:
+                result["Block_IO_Data"] = type_data["Block_IO_Data"]
+            if "Function_Block_IO_Data" in type_data:
+                result["Function_Block_IO_Data"] = type_data["Function_Block_IO_Data"]
+                
         return result
     
     # Fallback: return metrics as-is (backward compatible)
@@ -1983,7 +2009,99 @@ def create_sheet(
             
             row_idx += 1
     
+    # =========================================================================
+    # === Top Function Block I/O Table (NEW) ===
+    # =========================================================================
+    row_idx += 3
     
+    all_dut_func_io = [cycle.get("Function_Block_IO_Data", []) if cycle else [] for cycle in dut_cycles]
+    all_ref_func_io = [cycle.get("Function_Block_IO_Data", []) if cycle else [] for cycle in ref_cycles]
+    
+    all_func_names = set()
+    for cycle_data in all_dut_func_io + all_ref_func_io:
+        for func in cycle_data:
+            all_func_names.add(func['functionName'])
+            
+    if all_func_names:
+        func_stats = []
+        for func_name in all_func_names:
+            # DUT Stats
+            dut_times = []
+            for cycle_data in all_dut_func_io:
+                found_ms = next((item['timeTotal_ms'] for item in cycle_data if item['functionName'] == func_name), 0.0)
+                dut_times.append(found_ms)
+            dut_avg = sum(dut_times) / len(dut_times) if dut_times else 0.0
+            
+            # REF Stats
+            ref_times = []
+            for cycle_data in all_ref_func_io:
+                found_ms = next((item['timeTotal_ms'] for item in cycle_data if item['functionName'] == func_name), 0.0)
+                ref_times.append(found_ms)
+            ref_avg = sum(ref_times) / len(ref_times) if ref_times else 0.0
+            
+            diff = dut_avg - ref_avg
+            func_stats.append({
+                'name': func_name,
+                'dut_times': dut_times, 'dut_avg': dut_avg,
+                'ref_times': ref_times, 'ref_avg': ref_avg,
+                'diff': diff
+            })
+            
+        # [QUAN TRỌNG] Sort Diff giảm dần (ưu tiên DUT chậm hơn REF) và chỉ lấy Top 5
+        sorted_func_stats = sorted(func_stats, key=lambda x: x['diff'], reverse=True)[:5]
+        
+        # Vẽ Header
+        total_cols = 1 + len(dut_cycles) + 1 + len(ref_cycles) + 1 + 1 
+        ws.merge_range(row_idx, 0, row_idx, total_cols - 1, "Top Function Block I/O (Main Thread & HAL)", fmt_blockio_header)
+        row_idx += 1
+        
+        ws.write(row_idx, 0, "Function Name", fmt_blockio_header)
+        col_idx = 1
+        for i in range(1, len(dut_cycles) + 1):
+            ws.write(row_idx, col_idx, f"DUT Cy{i}", fmt_blockio_header)
+            col_idx += 1
+        ws.write(row_idx, col_idx, "DUT Avg", fmt_blockio_header)
+        col_idx += 1
+        
+        for i in range(1, len(ref_cycles) + 1):
+            ws.write(row_idx, col_idx, f"REF Cy{i}", fmt_blockio_header)
+            col_idx += 1
+        ws.write(row_idx, col_idx, "REF Avg", fmt_blockio_header)
+        col_idx += 1
+        
+        ws.write(row_idx, col_idx, "Diff", fmt_blockio_header)
+        row_idx += 1
+        
+        # Vẽ Data
+        for func in sorted_func_stats:
+            ws.write(row_idx, 0, func['name'], fmt_label)
+            col_idx = 1
+            
+            for val in func['dut_times']:
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                col_idx += 1
+            write_value_or_empty(ws, row_idx, col_idx, func['dut_avg'], fmt_blockio_val)
+            col_idx += 1
+            
+            for val in func['ref_times']:
+                write_value_or_empty(ws, row_idx, col_idx, val, fmt_blockio_val)
+                col_idx += 1
+            write_value_or_empty(ws, row_idx, col_idx, func['ref_avg'], fmt_blockio_val)
+            col_idx += 1
+            
+            # Format Diff (ngưỡng 10ms do Function thường nhỏ hơn Library)
+            diff_val = func['diff']
+            if diff_val > 10:
+                fmt_diff = fmt_diff_slow
+            elif diff_val < -10:
+                fmt_diff = fmt_diff_fast
+            else:
+                fmt_diff = fmt_diff_normal
+                
+            write_value_or_empty(ws, row_idx, col_idx, diff_val, fmt_diff)
+            row_idx += 1
+
+
     # ---------------------------------------------------------
     # === LoadApkAssets Table (UPDATED FOR CATEGORIES) ===
     # ---------------------------------------------------------

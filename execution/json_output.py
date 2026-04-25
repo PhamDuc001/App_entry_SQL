@@ -112,10 +112,10 @@ def export_avg_to_json(
         result = {}
 
         # ========================
-        # 0. STATE (Per Cycle)
+        # 0. STATE (Per Cycle) - [FIXED] Read actual Launch Type from trace analysis
+        # Same logic as Excel: each cycle can independently be Cold or Warm
         # ========================
-        current_state = "Cold" if launch_type == "entry" else "Warm"
-        result["State"] = [current_state for _ in valid_cycles]
+        result["State"] = [c.get("Launch Type", "Cold" if launch_type == "entry" else "Warm") for c in valid_cycles]
         
         # ========================
         # 1. SEQUENCE METRICS (AVG)
@@ -149,8 +149,8 @@ def export_avg_to_json(
             # Giúp phát hiện spike ở từng cycle mà average che giấu
             per_cycle_values = []
             for cycle in valid_cycles:
-                # Masking Logic: Bỏ qua metric nếu không đúng loại Launch Type
-                c_type = "Cold" if launch_type == "entry" else "Warm"
+                # [FIXED] Masking Logic: Read actual Launch Type per cycle (same as Excel)
+                c_type = cycle.get("Launch Type", "Cold" if launch_type == "entry" else "Warm")
                 if c_type == "Cold" and metric in WARM_ONLY_KEYS:
                     continue  # Bỏ qua Touch Duration cho cycle Cold
                 if c_type == "Warm" and metric in COLD_ONLY_KEYS:

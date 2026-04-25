@@ -317,6 +317,7 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
     
     metrics["end_ts_variants"] = end_ts_variants
     metrics["end_ts_primary"] = end_ts  # end_ts được chọn theo logic hiện tại (để backward compatible)
+    metrics["touch_down_ts"] = touch_down_ts  # [DEBUG] Added for verification
     
     # 2. Query data cho MỖI end_ts type
     data_by_end_ts = {}
@@ -353,7 +354,7 @@ def analyze_trace(tp: TraceProcessor, trace_path: str, pid_mapping: Dict[int, st
         primary_data = data_by_end_ts[primary_type]
         # Copy các fields vào metrics root để backward compatible
         for key in ["Running", "Runnable", "Uninterruptible Sleep", "Sleeping",
-                    "Block_IO_Data", "LoadApkAsset_Data", "CPU_Process_Data", 
+                    "Block_IO_Data", "Function_Block_IO_Data", "LoadApkAsset_Data", "CPU_Process_Data", 
                     "CPU_Thread_Data", "Binder_Transaction_Data", 
                     "Abnormal_Process_Data", "Background_Process_States"]:
             if key in primary_data:
